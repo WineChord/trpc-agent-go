@@ -388,6 +388,92 @@ func TestGraphAgentWithSubAgents(t *testing.T) {
 	// The test passes if we get here without errors, which means the sub-agent was called successfully.
 }
 
+// TestGraphAgentRun_SetsOnlyUserInput verifies that Run sets only
+// StateKeyUserInput from the invocation message and does not pre-populate
+// StateKeyMessages. This enforces the new one-shot input behavior documented
+// in graph docs.
+func TestGraphAgentRun_SetsOnlyUserInput(t *testing.T) {
+	// Build a minimal graph that asserts initial state expectations in the
+	// first node.
+	stateGraph := graph.NewStateGraph(nil)
+	stateGraph.AddNode("assert_state", func(ctx context.Context, s graph.State) (any, error) {
+		// user_input should be set to the invocation content.
+		v, ok := s[graph.StateKeyUserInput]
+		if !ok {
+			return nil, fmt.Errorf("user_input not set")
+		}
+		str, ok := v.(string)
+		if !ok || str != "hello world" {
+			return nil, fmt.Errorf("unexpected user_input value")
+		}
+		// messages should not be pre-populated by GraphAgent.
+		if _, exists := s[graph.StateKeyMessages]; exists {
+			return nil, fmt.Errorf("messages should not be pre-populated")
+		}
+		return graph.State{"ok": true}, nil
+	})
+	stateGraph.SetEntryPoint("assert_state")
+	stateGraph.SetFinishPoint("assert_state")
+
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+
+	ga, err := New("graph-agent", g)
+	require.NoError(t, err)
+
+	inv := &agent.Invocation{
+		Message: model.NewUserMessage("hello world"),
+	}
+	ch, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	require.NotNil(t, ch)
+
+	// Drain events to ensure the graph completed without errors.
+	count := 0
+	for range ch {
+		count++
+	}
+	if count == 0 {
+		t.Fatal("no events received")
+	}
+}
+
+// TestGraphAgentRun_EmptyMessageDoesNotSetUserInput verifies that when the
+// invocation message is empty, GraphAgent does not set StateKeyUserInput.
+func TestGraphAgentRun_EmptyMessageDoesNotSetUserInput(t *testing.T) {
+	stateGraph := graph.NewStateGraph(nil)
+	stateGraph.AddNode("assert_empty", func(ctx context.Context, s graph.State) (any, error) {
+		if _, exists := s[graph.StateKeyUserInput]; exists {
+			return nil, fmt.Errorf("user_input should not be set for empty message")
+		}
+		if _, exists := s[graph.StateKeyMessages]; exists {
+			return nil, fmt.Errorf("messages should not be pre-populated")
+		}
+		return graph.State{"ok": true}, nil
+	})
+	stateGraph.SetEntryPoint("assert_empty")
+	stateGraph.SetFinishPoint("assert_empty")
+
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+
+	ga, err := New("graph-agent", g)
+	require.NoError(t, err)
+
+	inv := &agent.Invocation{Message: model.NewUserMessage("")}
+	ch, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	require.NotNil(t, ch)
+
+	n := 0
+	for range ch {
+		n++
+	}
+	if n == 0 {
+		t.Fatal("no events received")
+	}
+}
+
 // mockAgent is a test implementation of agent.Agent for testing sub-agents.
 type mockAgent struct {
 	name           string
