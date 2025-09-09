@@ -243,6 +243,7 @@ func (ga *GraphAgent) setupInvocation(invocation *agent.Invocation) {
 	invocation.ToolCallbacks = ga.toolCallbacks
 }
 
+// Tools returns the list of tools that this agent has access to.
 func (ga *GraphAgent) Tools() []tool.Tool { return nil }
 
 // Info returns the basic information about this agent.
