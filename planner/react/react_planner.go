@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/planner"
 )
@@ -80,7 +81,14 @@ func (p *Planner) BuildPlanningInstruction(
 	invocation *agent.Invocation,
 	llmRequest *model.Request,
 ) string {
-	return p.buildPlannerInstruction()
+	instruction := p.buildPlannerInstruction()
+	log.Debugf("[DBG-REACT-0001] BuildPlanningInstruction agent=%s instructionLen=%d", func() string {
+		if invocation == nil {
+			return "<nil>"
+		}
+		return invocation.AgentName
+	}(), len(instruction))
+	return instruction
 }
 
 // ProcessPlanningResponse processes the LLM response to organize content
@@ -100,6 +108,12 @@ func (p *Planner) ProcessPlanningResponse(
 	response *model.Response,
 ) *model.Response {
 	if response == nil || len(response.Choices) == 0 {
+		log.Debugf("[DBG-REACT-0002] ProcessPlanningResponse no choices agent=%s", func() string {
+			if invocation == nil {
+				return "<nil>"
+			}
+			return invocation.AgentName
+		}())
 		return nil
 	}
 
@@ -109,6 +123,7 @@ func (p *Planner) ProcessPlanningResponse(
 
 	for i, choice := range response.Choices {
 		processedChoice := choice
+		log.Debugf("[DBG-REACT-0003] processing choice idx=%d toolCalls=%d contentLen=%d", i, len(choice.Message.ToolCalls), len(choice.Message.Content))
 
 		// Process tool calls first.
 		if len(choice.Message.ToolCalls) > 0 {
@@ -134,6 +149,12 @@ func (p *Planner) ProcessPlanningResponse(
 
 		processedResponse.Choices[i] = processedChoice
 	}
+	log.Debugf("[DBG-REACT-0004] ProcessPlanningResponse completed agent=%s processedChoices=%d", func() string {
+		if invocation == nil {
+			return "<nil>"
+		}
+		return invocation.AgentName
+	}(), len(processedResponse.Choices))
 
 	return &processedResponse
 }
@@ -141,9 +162,11 @@ func (p *Planner) ProcessPlanningResponse(
 // processTextContent handles the processing of text content according to
 // React planning structure, splitting content by tags and organizing it.
 func (p *Planner) processTextContent(content string) string {
+	log.Debugf("[DBG-REACT-0005] processTextContent len=%d hasFinal=%v", len(content), strings.Contains(content, FinalAnswerTag))
 	// If content contains final answer tag, split it.
 	if strings.Contains(content, FinalAnswerTag) {
 		_, finalAnswer := p.splitByLastPattern(content, FinalAnswerTag)
+		log.Debugf("[DBG-REACT-0006] final answer extracted len=%d", len(finalAnswer))
 		return finalAnswer
 	}
 	return content

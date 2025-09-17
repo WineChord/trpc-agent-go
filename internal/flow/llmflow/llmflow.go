@@ -71,14 +71,17 @@ func (f *Flow) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *e
 		defer close(eventChan)
 
 		for {
+			log.Debugf("[DBG-LLMFLOW-0001] run loop start agent=%s endInvocation=%v", invocation.AgentName, invocation.EndInvocation)
 			// Check if context is cancelled.
 			if err := agent.CheckContextCancelled(ctx); err != nil {
+				log.Debugf("[DBG-LLMFLOW-0002] context cancelled before step agent=%s err=%v", invocation.AgentName, err)
 				return
 			}
 
 			// Run one step (one LLM call cycle).
 			lastEvent, err := f.runOneStep(ctx, invocation, eventChan)
 			if err != nil {
+				log.Debugf("[DBG-LLMFLOW-0003] runOneStep returned err agent=%s err=%v", invocation.AgentName, err)
 				// Treat context cancellation as graceful termination (common in streaming
 				// pipelines where the client closes the stream after final event).
 				if errors.Is(err, context.Canceled) {
@@ -113,6 +116,12 @@ func (f *Flow) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *e
 			// If no events were produced in this step, treat as terminal to avoid busy loop.
 			// Also break when EndInvocation is set or a final response is observed.
 			if lastEvent == nil || invocation.EndInvocation || lastEvent.IsFinalResponse() {
+				log.Debugf("[DBG-LLMFLOW-0004] breaking loop agent=%s lastEventNil=%v endFlag=%v final=%v", invocation.AgentName, lastEvent == nil, invocation.EndInvocation, func() bool {
+					if lastEvent == nil {
+						return false
+					}
+					return lastEvent.IsFinalResponse()
+				}())
 				break
 			}
 		}
@@ -128,6 +137,7 @@ func (f *Flow) runOneStep(
 	invocation *agent.Invocation,
 	eventChan chan<- *event.Event,
 ) (*event.Event, error) {
+	log.Debugf("[DBG-LLMFLOW-0100] runOneStep begin agent=%s endInvocation=%v", invocation.AgentName, invocation.EndInvocation)
 	var lastEvent *event.Event
 
 	// Initialize empty LLM request.
@@ -137,8 +147,10 @@ func (f *Flow) runOneStep(
 
 	// 1. Preprocess (prepare request).
 	f.preprocess(ctx, invocation, llmRequest, eventChan)
+	log.Debugf("[DBG-LLMFLOW-0101] after preprocess agent=%s endInvocation=%v tools=%d", invocation.AgentName, invocation.EndInvocation, len(llmRequest.Tools))
 
 	if invocation.EndInvocation {
+		log.Debugf("[DBG-LLMFLOW-0102] endInvocation set during preprocess agent=%s", invocation.AgentName)
 		return lastEvent, nil
 	}
 
@@ -148,6 +160,7 @@ func (f *Flow) runOneStep(
 	// 2. Call LLM (get response channel).
 	responseChan, err := f.callLLM(ctx, invocation, llmRequest)
 	if err != nil {
+		log.Debugf("[DBG-LLMFLOW-0103] callLLM error agent=%s err=%v", invocation.AgentName, err)
 		return nil, err
 	}
 
@@ -167,28 +180,35 @@ func (f *Flow) processStreamingResponses(
 	var lastEvent *event.Event
 
 	for response := range responseChan {
+		log.Debugf("[DBG-LLMFLOW-0200] processing response chunk agent=%s done=%v choices=%d", invocation.AgentName, response.Done, len(response.Choices))
 		// Handle after model callbacks.
 		customResp, err := f.handleAfterModelCallbacks(ctx, invocation, llmRequest, response, eventChan)
 		if err != nil {
+			log.Debugf("[DBG-LLMFLOW-0201] afterModelCallbacks err agent=%s err=%v", invocation.AgentName, err)
 			return lastEvent, err
 		}
 		if customResp != nil {
+			log.Debugf("[DBG-LLMFLOW-0202] custom response returned agent=%s", invocation.AgentName)
 			response = customResp
 		}
 
 		// 4. Create and send LLM response using the clean constructor.
 		llmResponseEvent := f.createLLMResponseEvent(invocation, response, llmRequest)
+		log.Debugf("[DBG-LLMFLOW-0203] emitting event agent=%s eventID=%s done=%v requiresCompletion=%v", invocation.AgentName, llmResponseEvent.ID, llmResponseEvent.Done, llmResponseEvent.RequiresCompletion)
 		agent.EmitEvent(ctx, invocation, eventChan, llmResponseEvent)
 		lastEvent = llmResponseEvent
 
 		// 5. Check context cancellation.
 		if err := agent.CheckContextCancelled(ctx); err != nil {
+			log.Debugf("[DBG-LLMFLOW-0204] context cancelled mid-stream agent=%s err=%v", invocation.AgentName, err)
 			return lastEvent, err
 		}
 
 		// 6. Postprocess response.
 		f.postprocess(ctx, invocation, llmRequest, response, eventChan)
+		log.Debugf("[DBG-LLMFLOW-0205] postprocess done agent=%s endInvocation=%v", invocation.AgentName, invocation.EndInvocation)
 		if err := agent.CheckContextCancelled(ctx); err != nil {
+			log.Debugf("[DBG-LLMFLOW-0206] context cancelled after postprocess agent=%s err=%v", invocation.AgentName, err)
 			return lastEvent, err
 		}
 

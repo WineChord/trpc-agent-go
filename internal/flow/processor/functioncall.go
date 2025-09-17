@@ -92,17 +92,25 @@ func (p *FunctionCallResponseProcessor) ProcessResponse(
 	rsp *model.Response,
 	ch chan<- *event.Event,
 ) {
+	log.Debugf("[DBG-FUNC-0001] ProcessResponse agent=%s hasInvocation=%v toolCallResponse=%v", func() string {
+		if invocation == nil {
+			return "<nil>"
+		}
+		return invocation.AgentName
+	}(), invocation != nil, rsp != nil && rsp.IsToolCallResponse())
 	if invocation == nil || !rsp.IsToolCallResponse() {
 		return
 	}
 
 	functioncallResponseEvent, err := p.handleFunctionCallsAndSendEvent(ctx, invocation, rsp, req.Tools, ch)
 	if err != nil || functioncallResponseEvent == nil {
+		log.Debugf("[DBG-FUNC-0002] handleFunctionCallsAndSendEvent early exit eventNil=%v err=%v", functioncallResponseEvent == nil, err)
 		return
 	}
 
 	// Wait for completion if required.
 	if err := p.waitForCompletion(ctx, invocation, functioncallResponseEvent); err != nil {
+		log.Debugf("[DBG-FUNC-0003] waitForCompletion error eventID=%s err=%v", functioncallResponseEvent.ID, err)
 		agent.EmitEvent(ctx, invocation, ch, event.NewErrorEvent(
 			invocation.InvocationID,
 			invocation.AgentName,
@@ -129,6 +137,7 @@ func (p *FunctionCallResponseProcessor) handleFunctionCallsAndSendEvent(
 	)
 	if err != nil {
 		log.Errorf("Function call handling failed for agent %s: %v", invocation.AgentName, err)
+		log.Debugf("[DBG-FUNC-0100] handleFunctionCalls error agent=%s err=%v", invocation.AgentName, err)
 		if emitErr := agent.EmitEvent(ctx, invocation, eventChan, event.NewErrorEvent(
 			invocation.InvocationID,
 			invocation.AgentName,
@@ -139,6 +148,12 @@ func (p *FunctionCallResponseProcessor) handleFunctionCallsAndSendEvent(
 		}
 		return nil, err
 	}
+	log.Debugf("[DBG-FUNC-0101] handleFunctionCalls success eventID=%s skipSumm=%v", func() string {
+		if functionResponseEvent == nil {
+			return "<nil>"
+		}
+		return functionResponseEvent.ID
+	}(), functionResponseEvent != nil && functionResponseEvent.Actions != nil && functionResponseEvent.Actions.SkipSummarization)
 	err = agent.EmitEvent(ctx, invocation, eventChan, functionResponseEvent)
 	return functionResponseEvent, nil
 }
@@ -157,28 +172,34 @@ func (p *FunctionCallResponseProcessor) handleFunctionCalls(
 
 	var toolCallResponsesEvents []*event.Event
 	toolCalls := llmResponse.Choices[0].Message.ToolCalls
+	log.Debugf("[DBG-FUNC-0200] handleFunctionCalls agent=%s toolCallCount=%d", invocation.AgentName, len(toolCalls))
 
 	// If parallel tools are enabled AND multiple tool calls, execute concurrently
 	if p.enableParallelTools && len(toolCalls) > 1 {
+		log.Debugf("[DBG-FUNC-0201] executing tools in parallel agent=%s", invocation.AgentName)
 		return p.executeToolCallsInParallel(ctx, invocation, llmResponse, toolCalls, tools, eventChan)
 	}
 
 	// Execute each tool call.
 	for i, toolCall := range toolCalls {
 		if err := func(index int, toolCall model.ToolCall) error {
+			log.Debugf("[DBG-FUNC-0202] executing tool sequential idx=%d name=%s", index, toolCall.Function.Name)
 			ctxWithInvocation, span := trace.Tracer.Start(ctx,
 				fmt.Sprintf("%s %s", itelemetry.SpanNamePrefixExecuteTool, toolCall.Function.Name))
 			defer span.End()
 			choice, err := p.executeToolCall(ctxWithInvocation, invocation, toolCall, tools, i, eventChan)
 			if err != nil {
+				log.Debugf("[DBG-FUNC-0203] executeToolCall error name=%s err=%v", toolCall.Function.Name, err)
 				return err
 			}
 			if choice == nil {
+				log.Debugf("[DBG-FUNC-0204] executeToolCall returned nil name=%s", toolCall.Function.Name)
 				return nil
 			}
 			choice.Message.ToolName = toolCall.Function.Name
 			toolCallResponseEvent := newToolCallResponseEvent(invocation, llmResponse,
 				[]model.Choice{*choice})
+			log.Debugf("[DBG-FUNC-0205] tool response event created id=%s skipSumm=%v", toolCallResponseEvent.ID, toolCallResponseEvent.Actions != nil && toolCallResponseEvent.Actions.SkipSummarization)
 
 			if tl, ok := tools[toolCall.Function.Name]; ok {
 				if skipper, ok2 := tl.(summarizationSkipper); ok2 && skipper.SkipSummarization() {
@@ -246,6 +267,7 @@ func (p *FunctionCallResponseProcessor) handleFunctionCalls(
 	// If the tool indicates skipping outer summarization, mark the invocation to end
 	// after this tool response so the flow does not perform an extra LLM call.
 	if mergedEvent.Actions != nil && mergedEvent.Actions.SkipSummarization {
+		log.Debugf("[DBG-FUNC-0206] skipSummarization true -> EndInvocation agent=%s eventID=%s", invocation.AgentName, mergedEvent.ID)
 		invocation.EndInvocation = true
 	}
 	if len(toolCallResponsesEvents) > 1 {
@@ -482,12 +504,15 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 // waitForCompletion waits for event completion if required.
 func (p *FunctionCallResponseProcessor) waitForCompletion(ctx context.Context, invocation *agent.Invocation, lastEvent *event.Event) error {
 	if !lastEvent.RequiresCompletion {
+		log.Debugf("[DBG-FUNC-0300] waitForCompletion skip eventID=%s", lastEvent.ID)
 		return nil
 	}
 
 	completionID := agent.AppendEventNoticeKeyPrefix + lastEvent.ID
+	log.Debugf("[DBG-FUNC-0301] waitForCompletion waiting eventID=%s completionID=%s", lastEvent.ID, completionID)
 	select {
 	case <-invocation.AddNoticeChannel(ctx, completionID):
+		log.Debugf("[DBG-FUNC-0302] waitForCompletion received notice eventID=%s", lastEvent.ID)
 	case <-time.After(eventCompletionTimeout):
 		log.Warnf("Timeout waiting for completion of event %s", lastEvent.ID)
 	case <-ctx.Done():
