@@ -92,7 +92,7 @@ type Invocation struct {
 
 	// noticeChanMap is used to signal when events are written to the session.
 	noticeChanMap map[string]chan any
-	noticeMu      *sync.Mutex
+	noticeMu      sync.Mutex
 
 	// eventFilterKey is used to filter events for flow or agent
 	eventFilterKey string
@@ -188,7 +188,6 @@ type RunOptions struct {
 func NewInvocation(invocationOpts ...InvocationOptions) *Invocation {
 	inv := &Invocation{
 		InvocationID:  uuid.NewString(),
-		noticeMu:      &sync.Mutex{},
 		noticeChanMap: make(map[string]chan any),
 	}
 
