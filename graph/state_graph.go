@@ -1104,9 +1104,11 @@ func NewAgentNodeFunc(agentName string, opts ...Option) NodeFunc {
 					cloned := state.Clone()
 					cloned[StateKeyUserInput] = v
 					parentForInput = cloned
+					log.Infof("inputFromLast: %s, lastResponse: %s", inputFromLast, v)
 				}
 			}
 		}
+		log.Infof("inputFromLast: %v, lastResponse: %s", inputFromLast, state[StateKeyLastResponse])
 
 		// Build invocation for the target agent with custom runtime state and scope.
 		invocation := buildAgentInvocationWithStateAndScope(ctx, parentForInput, childState, targetAgent, scope)
@@ -1132,6 +1134,7 @@ func NewAgentNodeFunc(agentName string, opts ...Option) NodeFunc {
 		lastResponse, finalState, rawDelta, err := processAgentEventStream(
 			ctx, agentEventChan, nodeCallbacks, nodeID, state, eventChan, agentName,
 		)
+		log.Infof("agent event stream processed, lastResponse: %s, err: %+v", lastResponse, err)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process agent event stream: %w", err)
 		}
