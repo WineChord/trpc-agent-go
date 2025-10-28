@@ -114,6 +114,14 @@ func (p *TransferResponseProcessor) ProcessResponse(
 	// after transfer, not the target agent's invocation.
 	targetInvocation := invocation.Clone(
 		agent.WithInvocationAgent(targetAgent),
+		// Reset filter key to the target agent name so the child agent
+		// only consumes its own branch/history instead of inheriting the
+		// parent's filter. This avoids leaking coordinator tool calls
+		// into the sub-agent prompt and prevents empty final replies
+		// that can cause loops in the flow.
+		agent.WithInvocationEventFilterKey(
+			targetAgent.Info().Name,
+		),
 	)
 
 	// Set the message for the target agent.
