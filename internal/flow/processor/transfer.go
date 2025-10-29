@@ -124,20 +124,53 @@ func (p *TransferResponseProcessor) ProcessResponse(
 		),
 	)
 
-	// Set the message for the target agent.
+	// Set or synthesize the message for the target agent.
 	if transferInfo.Message != "" {
 		targetInvocation.Message = model.Message{
 			Role:    model.RoleUser,
 			Content: transferInfo.Message,
 		}
-		// Always emit a transfer message echo for visibility and traceability.
-		// Use tag so UIs can filter internal delegation messages without breaking event alignment.
 		agent.EmitEvent(ctx, targetInvocation, ch, event.NewResponseEvent(
 			targetInvocation.InvocationID,
 			targetAgent.Info().Name,
-			&model.Response{Choices: []model.Choice{{Message: targetInvocation.Message}}},
+			&model.Response{Choices: []model.Choice{{
+				Message: targetInvocation.Message,
+			}}},
 			event.WithTag(TransferTag),
 		))
+	} else {
+		// Fallback: use latest user message from parent session if any.
+		if msg := latestUserMessage(invocation); msg != nil {
+			targetInvocation.Message = *msg
+			agent.EmitEvent(
+				ctx, targetInvocation, ch,
+				event.NewResponseEvent(
+					targetInvocation.InvocationID,
+					targetAgent.Info().Name,
+					&model.Response{Choices: []model.Choice{{
+						Message: *msg,
+					}}},
+					event.WithTag(TransferTag),
+				),
+			)
+		} else {
+			// As a last resort, inject a harmless default text.
+			// Keep behavior consistent with direct sub-agent mapping
+			// in functioncall processor (defaultTransferMessage).
+			def := model.NewUserMessage(defaultTransferMessage)
+			targetInvocation.Message = def
+			agent.EmitEvent(
+				ctx, targetInvocation, ch,
+				event.NewResponseEvent(
+					targetInvocation.InvocationID,
+					targetAgent.Info().Name,
+					&model.Response{Choices: []model.Choice{{
+						Message: def,
+					}}},
+					event.WithTag(TransferTag),
+				),
+			)
+		}
 	}
 
 	// Actually call the target agent's Run method with the target invocation in context
@@ -170,4 +203,32 @@ func (p *TransferResponseProcessor) ProcessResponse(
 	log.Debugf("Transfer response processor: target agent '%s' completed; ending original invocation", targetAgent.Info().Name)
 	invocation.TransferInfo = nil
 	invocation.EndInvocation = p.endInvocationAfterTransfer
+}
+
+// latestUserMessage finds the latest user message from the parent session.
+// It ignores partial or invalid content events and returns nil when absent.
+func latestUserMessage(inv *agent.Invocation) *model.Message {
+	if inv == nil || inv.Session == nil {
+		return nil
+	}
+	inv.Session.EventMu.RLock()
+	defer inv.Session.EventMu.RUnlock()
+	for i := len(inv.Session.Events) - 1; i >= 0; i-- {
+		evt := inv.Session.Events[i]
+		if evt.Response == nil || evt.IsPartial ||
+			!evt.IsValidContent() {
+			continue
+		}
+		if len(evt.Response.Choices) == 0 {
+			continue
+		}
+		for _, c := range evt.Response.Choices {
+			if c.Message.Role == model.RoleUser &&
+				c.Message.Content != "" {
+				msg := c.Message
+				return &msg
+			}
+		}
+	}
+	return nil
 }
