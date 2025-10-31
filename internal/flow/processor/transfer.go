@@ -12,6 +12,7 @@ package processor
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -112,16 +113,18 @@ func (p *TransferResponseProcessor) ProcessResponse(
 	// Do NOT propagate EndInvocation from the coordinator.
 	// end_invocation is intended to end the current (parent) invocation
 	// after transfer, not the target agent's invocation.
+	//
+	// Use a hierarchical filter key so the child inherits the parent's
+	// history via prefix matching while keeping its own sub-branch.
+	parentKey := invocation.GetEventFilterKey()
+	unique := targetAgent.Info().Name + "-" + uuid.NewString()
+	childKey := unique
+	if parentKey != "" {
+		childKey = parentKey + agent.EventFilterKeyDelimiter + unique
+	}
 	targetInvocation := invocation.Clone(
 		agent.WithInvocationAgent(targetAgent),
-		// Reset filter key to the target agent name so the child agent
-		// only consumes its own branch/history instead of inheriting the
-		// parent's filter. This avoids leaking coordinator tool calls
-		// into the sub-agent prompt and prevents empty final replies
-		// that can cause loops in the flow.
-		agent.WithInvocationEventFilterKey(
-			targetAgent.Info().Name,
-		),
+		agent.WithInvocationEventFilterKey(childKey),
 	)
 
 	// Set or synthesize the message for the target agent.
