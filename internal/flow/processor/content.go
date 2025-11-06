@@ -158,12 +158,99 @@ func (p *ContentRequestProcessor) ProcessRequest(
 			invocation.Message.Role)
 	}
 
+	// Strip unsupported parent tool traces and normalize
+	// consecutive messages of the same role.
+	p.stripUnsupportedToolCalls(invocation, req)
+	p.collapseConsecutiveSameRole(req)
+
 	// Send a preprocessing event.
 	agent.EmitEvent(ctx, invocation, ch, event.New(
 		invocation.InvocationID,
 		invocation.AgentName,
 		event.WithObject(model.ObjectTypePreprocessingPlanning),
 	))
+}
+
+// stripUnsupportedToolCalls removes assistant.tool_calls not
+// declared by the current agent and drops matching tool role
+// messages (by ToolID).
+func (p *ContentRequestProcessor) stripUnsupportedToolCalls(
+	inv *agent.Invocation, req *model.Request,
+) {
+	if inv == nil || inv.Agent == nil || req == nil {
+		return
+	}
+	declared := make(map[string]struct{})
+	for _, t := range inv.Agent.Tools() {
+		d := t.Declaration()
+		if d.Name != "" {
+			declared[d.Name] = struct{}{}
+		}
+	}
+	removed := make(map[string]struct{})
+	for i := range req.Messages {
+		m := &req.Messages[i]
+		if m.Role != model.RoleAssistant || len(m.ToolCalls) == 0 {
+			continue
+		}
+		kept := m.ToolCalls[:0]
+		for _, tc := range m.ToolCalls {
+			name := tc.Function.Name
+			if name == "" {
+				kept = append(kept, tc)
+				continue
+			}
+			if _, ok := declared[name]; ok {
+				kept = append(kept, tc)
+			} else if tc.ID != "" {
+				removed[tc.ID] = struct{}{}
+			}
+		}
+		m.ToolCalls = kept
+	}
+	if len(removed) == 0 {
+		return
+	}
+	out := req.Messages[:0]
+	for _, m := range req.Messages {
+		if m.Role == model.RoleTool && m.ToolID != "" {
+			if _, hit := removed[m.ToolID]; hit {
+				continue
+			}
+		}
+		out = append(out, m)
+	}
+	req.Messages = out
+}
+
+// collapseConsecutiveUsers merges adjacent user messages to avoid long runs
+// of user messages that can confuse providers.
+func (p *ContentRequestProcessor) collapseConsecutiveSameRole(
+	req *model.Request,
+) {
+	if req == nil || len(req.Messages) == 0 {
+		return
+	}
+	out := make([]model.Message, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		n := len(out)
+		if n > 0 && out[n-1].Role == m.Role &&
+			(m.Role == model.RoleUser || m.Role == model.RoleAssistant) {
+			if m.Content != "" {
+				if out[n-1].Content != "" {
+					out[n-1].Content += "\n" + m.Content
+				} else {
+					out[n-1].Content = m.Content
+				}
+			}
+			if m.Role == model.RoleAssistant && len(m.ToolCalls) > 0 {
+				out[n-1].ToolCalls = append(out[n-1].ToolCalls, m.ToolCalls...)
+			}
+			continue
+		}
+		out = append(out, m)
+	}
+	req.Messages = out
 }
 
 // getSessionSummaryMessage returns the current-branch session summary as a

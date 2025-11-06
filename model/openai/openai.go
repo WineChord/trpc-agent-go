@@ -539,6 +539,92 @@ func (m *Model) GenerateContent(
 
 	chatRequest, opts := m.buildChatRequest(request)
 
+	// Debug summary of message roles to help diagnose malformed
+	// conversations (e.g., unexpected role ordering).
+	if len(chatRequest.Messages) > 0 {
+		// Collect up to the last 6 roles for readability.
+		total := len(chatRequest.Messages)
+		start := total - 6
+		if start < 0 {
+			start = 0
+		}
+		roles := make([]string, 0, total-start)
+		for i := start; i < total; i++ {
+			u := chatRequest.Messages[i]
+			role := "unknown"
+			if u.OfSystem != nil {
+				role = "system"
+			} else if u.OfUser != nil {
+				role = "user"
+			} else if u.OfAssistant != nil {
+				role = "assistant"
+			} else if u.OfTool != nil {
+				role = "tool"
+			}
+			roles = append(roles, role)
+		}
+		last := roles[len(roles)-1]
+		log.Debugf(
+			"openai chat: model=%s url=%s msgs=%d "+
+				"last_roles=%v last=%s tools=%d stream=%v",
+			m.name, m.baseURL, total, roles, last,
+			len(chatRequest.Tools), request.Stream,
+		)
+
+		// Diagnose historical tool_calls vs declared tools.
+		// 1) Collect declared tool names.
+		declared := make(map[string]struct{})
+		for _, t := range chatRequest.Tools {
+			if t.Function.Name != "" {
+				declared[string(t.Function.Name)] = struct{}{}
+			}
+		}
+		// 2) Scan assistant messages for embedded tool_calls.
+		var toolCallTotal int
+		unknown := make(map[string]int)
+		for _, u := range chatRequest.Messages {
+			if u.OfAssistant == nil {
+				continue
+			}
+			for _, tc := range u.OfAssistant.ToolCalls {
+				toolCallTotal++
+				name := string(tc.Function.Name)
+				if name == "" {
+					continue
+				}
+				if _, ok := declared[name]; !ok {
+					unknown[name]++
+				}
+			}
+		}
+		if toolCallTotal > 0 {
+			log.Debugf(
+				"openai chat: hist tool_calls=%d declared=%d",
+				toolCallTotal, len(declared),
+			)
+		}
+		if len(unknown) > 0 {
+			// Emit a concise warn with up to 3 unknown names.
+			sample := make([]string, 0, 3)
+			for n := range unknown {
+				sample = append(sample, n)
+				if len(sample) >= 3 {
+					break
+				}
+			}
+			log.Warnf(
+				"openai chat: unknown tool_calls in history %v (trim)",
+				sample,
+			)
+		}
+	} else {
+		log.Debugf(
+			"openai chat request roles: model=%s baseURL=%s total=0 tools=%d "+
+				"stream=%v",
+			m.name, m.baseURL, len(chatRequest.Tools), request.Stream,
+		)
+	}
+
 	go func() {
 		defer close(responseChan)
 
@@ -1005,8 +1091,11 @@ func (m *Model) handleStreamingResponse(
 	idToIndexMap := make(map[string]int)
 	// Aggregate reasoning deltas for final message fallback (some providers don't retain it in accumulator).
 	var reasoningBuf bytes.Buffer
+	// Count raw SSE chunks to surface "silent stream" cases.
+	var chunkTotal int
 
 	for stream.Next() {
+		chunkTotal++
 		chunk := stream.Current()
 
 		// Skip empty chunks.
@@ -1062,6 +1151,15 @@ func (m *Model) handleStreamingResponse(
 			callbackAcc = &acc
 		}
 		m.chatStreamCompleteCallback(ctx, &chatRequest, callbackAcc, stream.Err())
+	}
+
+	// If the stream ended "successfully" but produced zero chunks,
+	// surface this as a warning to help root-cause empty finals.
+	if stream.Err() == nil && chunkTotal == 0 {
+		log.Warnf(
+			"openai stream returned no chunks: model=%s baseURL=%s",
+			m.name, m.baseURL,
+		)
 	}
 }
 
@@ -1228,7 +1326,8 @@ func (m *Model) sendFinalResponse(
 			accumulatedToolCalls = m.processAccumulatedToolCalls(acc, idToIndexMap)
 		}
 
-		// If accumulator is empty but we have aggregated reasoning, create a response with it.
+		// If accumulator is empty but we have aggregated reasoning,
+		// create a response with it.
 		if len(acc.Choices) == 0 && aggregatedReasoning != "" {
 			finalResponse := &model.Response{
 				Object:    model.ObjectTypeChatCompletion,
@@ -1250,6 +1349,39 @@ func (m *Model) sendFinalResponse(
 			}
 			select {
 			case responseChan <- finalResponse:
+			case <-ctx.Done():
+			}
+			return
+		}
+
+		// If the stream ended cleanly but produced no choices and no
+		// reasoning text, still emit a terminal response so the runner
+		// can finish the step instead of looping forever.
+		// Log a warning to help identify silent upstream behavior.
+		if len(acc.Choices) == 0 && aggregatedReasoning == "" {
+			log.Warnf(
+				"openai final response has no choices and no reasoning: "+
+					"model=%s baseURL=%s",
+				m.name, m.baseURL,
+			)
+			final := &model.Response{
+				Object:    model.ObjectTypeChatCompletion,
+				ID:        acc.ID,
+				Created:   acc.Created,
+				Model:     acc.Model,
+				Timestamp: time.Now(),
+				Done:      true,
+				IsPartial: false,
+				Choices: []model.Choice{{
+					Index: 0,
+					Message: model.Message{
+						Role:    model.RoleAssistant,
+						Content: "",
+					},
+				}},
+			}
+			select {
+			case responseChan <- final:
 			case <-ctx.Done():
 			}
 			return
