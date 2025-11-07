@@ -163,6 +163,12 @@ func (p *ContentRequestProcessor) ProcessRequest(
 	p.stripUnsupportedToolCalls(invocation, req)
 	p.collapseConsecutiveSameRole(req)
 
+	// Ensure the last message is a user turn. Some providers expect the
+	// final turn to be a user query; otherwise they may early-stop with
+	// empty output. If the last message is not a user, append a synthetic
+	// user message by reusing the most recent user content.
+	p.ensureTrailingUser(req)
+
 	// Send a preprocessing event.
 	agent.EmitEvent(ctx, invocation, ch, event.New(
 		invocation.InvocationID,
@@ -251,6 +257,41 @@ func (p *ContentRequestProcessor) collapseConsecutiveSameRole(
 		out = append(out, m)
 	}
 	req.Messages = out
+}
+
+// ensureTrailingUser makes sure the last message is authored by the user.
+// If the last message is not a user message, it looks back for the most
+// recent non-empty user message and appends a synthetic user message with
+// the same content, so the model enters a response state.
+func (p *ContentRequestProcessor) ensureTrailingUser(
+	req *model.Request,
+) {
+	if req == nil || len(req.Messages) == 0 {
+		return
+	}
+
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role == model.RoleUser &&
+		(last.Content != "" || len(last.ContentParts) > 0) {
+		return
+	}
+
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		m := req.Messages[i]
+		if m.Role != model.RoleUser {
+			continue
+		}
+		if m.Content == "" && len(m.ContentParts) == 0 {
+			continue
+		}
+		// Append a synthetic user turn duplicating the latest user input.
+		req.Messages = append(req.Messages, model.Message{
+			Role:         model.RoleUser,
+			Content:      m.Content,
+			ContentParts: m.ContentParts,
+		})
+		return
+	}
 }
 
 // getSessionSummaryMessage returns the current-branch session summary as a

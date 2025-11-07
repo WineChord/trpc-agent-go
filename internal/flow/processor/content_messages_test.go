@@ -267,3 +267,38 @@ func newSessionEventWithBranch(author, filterKey, branch string, msg model.Messa
 		Version:   event.CurrentVersion,
 	}
 }
+
+// When the last message is not a user, the processor should append a
+// synthetic user message reusing the most recent user content so that
+// providers enter a response state.
+func TestProcessRequest_EnsureTrailingUser_AppendsFromLastUser(t *testing.T) {
+	// Session history: user -> assistant (transfer-like)
+	sess := &session.Session{}
+	userMsg := model.NewUserMessage("写一首关于滑雪的歌曲，帮我优化灵感")
+	assistMsg := model.NewAssistantMessage(
+		"收到啦… Transferring control to agent: inspiration_assistant",
+	)
+	sess.Events = append(sess.Events,
+		newSessionEvent("user", userMsg),
+		newSessionEvent("test-agent", assistMsg),
+	)
+
+	// Build invocation for the same agent; do not pass an invocation message
+	// so the processor only uses session messages.
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+	)
+	inv.AgentName = "test-agent"
+
+	req := &model.Request{}
+	p := NewContentRequestProcessor()
+	p.ProcessRequest(context.Background(), inv, req, nil)
+
+	require.Equal(t, 3, len(req.Messages))
+	require.Equal(t, model.RoleUser, req.Messages[0].Role)
+	require.Equal(t, model.RoleAssistant, req.Messages[1].Role)
+	// The appended synthetic message must be a user message duplicating
+	// the latest real user input.
+	require.Equal(t, model.RoleUser, req.Messages[2].Role)
+	require.Equal(t, req.Messages[0].Content, req.Messages[2].Content)
+}
