@@ -642,6 +642,93 @@ eventChan, err := runner.Run(ctx, userID, sessionID, visionMessage,
 )
 ```
 
+##### 模型相关的 System Prompt（Prompt 管理）
+
+切换模型并不会自动切换 System Prompt（系统提示词）。在实际业务中，不同模型
+或不同供应商往往需要不同的 System Prompt（例如不同的格式约束或安全策略）。
+
+为了避免“每个 System Prompt 都要新建一个 Runner”，你可以使用 Runner 插件在
+每次发起模型请求前，根据当前模型名称选择并注入对应的提示词。
+
+框架提供了 `plugin.ModelPrompt`，它会在每次模型调用前运行，把解析出的 Prompt
+注入到请求消息里。
+
+###### 方式一：内存 Map
+
+Map 的 key 需要与 `model.Info().Name` 一致（也就是模型提供方的真实名称）。
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/plugin"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
+)
+
+resolver := plugin.NewStaticModelPromptResolver(map[string]plugin.Prompt{
+    "gpt-4o-mini": plugin.SystemPrompt("GPT 的系统提示词。"),
+    "hunyuan":     plugin.SystemPrompt("混元的系统提示词。"),
+})
+
+run := runner.NewRunner(
+    "app",
+    agent,
+    runner.WithPlugins(plugin.NewModelPrompt(resolver)),
+)
+```
+
+###### 方式二：Langfuse Prompt 管理
+
+Langfuse 提供通过 HTTP（Hypertext Transfer Protocol）应用程序编程接口
+（Application Programming Interface，API）进行 Prompt 管理，可以在不重新发布
+服务的情况下更新提示词。
+
+```go
+import (
+    "log"
+    "os"
+    "time"
+
+    "trpc.group/trpc-go/trpc-agent-go/plugin"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
+)
+
+client, err := plugin.NewLangfuseClient(plugin.LangfuseClientOptions{
+    BaseURL:   os.Getenv("LANGFUSE_BASE_URL"),
+    PublicKey: os.Getenv("LANGFUSE_PUBLIC_KEY"),
+    SecretKey: os.Getenv("LANGFUSE_SECRET_KEY"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resolver, err := plugin.NewLangfusePromptResolver(
+    client,
+    map[string]plugin.LangfusePromptRef{
+        "gpt-4o-mini": {Name: "doc/ppt/openai"},
+        "hunyuan":     {Name: "doc/ppt/hunyuan"},
+    },
+)
+if err != nil {
+    log.Fatal(err)
+}
+resolver.WithCacheTTL(5 * time.Minute)
+
+run := runner.NewRunner(
+    "app",
+    agent,
+    runner.WithPlugins(plugin.NewModelPrompt(resolver)),
+)
+```
+
+注意：
+
+- 注入的提示词是在每次模型请求前解析的，因此同时支持 Agent 级别切换
+  （`SetModel`、`SetModelByName`）和请求级别切换
+  （`agent.WithModel`、`agent.WithModelName`）。
+- 如果你同时配置了全局 System Prompt（例如
+  `llmagent.WithGlobalInstruction`），`ModelPrompt` 会在其前面再追加一层。
+- 当提示词来自 Langfuse 时，`ModelPrompt` 会把 prompt name/version 记录到
+  当前 OpenTelemetry（OTel）span 的 Langfuse 字段里，便于按提示词筛选。
+
 ##### 配置说明
 
 **WithModels 选项**：
@@ -1743,6 +1830,93 @@ eventChan, err := runner.Run(ctx, userID, sessionID, visionMessage,
     agent.WithModelName("vision"),
 )
 ```
+
+##### 模型相关的 System Prompt（Prompt 管理）
+
+切换模型并不会自动切换 System Prompt（系统提示词）。在实际业务中，不同模型
+或不同供应商往往需要不同的 System Prompt（例如不同的格式约束或安全策略）。
+
+为了避免“每个 System Prompt 都要新建一个 Runner”，你可以使用 Runner 插件在
+每次发起模型请求前，根据当前模型名称选择并注入对应的提示词。
+
+框架提供了 `plugin.ModelPrompt`，它会在每次模型调用前运行，把解析出的 Prompt
+注入到请求消息里。
+
+###### 方式一：内存 Map
+
+Map 的 key 需要与 `model.Info().Name` 一致（也就是模型提供方的真实名称）。
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/plugin"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
+)
+
+resolver := plugin.NewStaticModelPromptResolver(map[string]plugin.Prompt{
+    "gpt-4o-mini": plugin.SystemPrompt("GPT 的系统提示词。"),
+    "hunyuan":     plugin.SystemPrompt("混元的系统提示词。"),
+})
+
+run := runner.NewRunner(
+    "app",
+    agent,
+    runner.WithPlugins(plugin.NewModelPrompt(resolver)),
+)
+```
+
+###### 方式二：Langfuse Prompt 管理
+
+Langfuse 提供通过 HTTP（Hypertext Transfer Protocol）应用程序编程接口
+（Application Programming Interface，API）进行 Prompt 管理，可以在不重新发布
+服务的情况下更新提示词。
+
+```go
+import (
+    "log"
+    "os"
+    "time"
+
+    "trpc.group/trpc-go/trpc-agent-go/plugin"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
+)
+
+client, err := plugin.NewLangfuseClient(plugin.LangfuseClientOptions{
+    BaseURL:   os.Getenv("LANGFUSE_BASE_URL"),
+    PublicKey: os.Getenv("LANGFUSE_PUBLIC_KEY"),
+    SecretKey: os.Getenv("LANGFUSE_SECRET_KEY"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resolver, err := plugin.NewLangfusePromptResolver(
+    client,
+    map[string]plugin.LangfusePromptRef{
+        "gpt-4o-mini": {Name: "doc/ppt/openai"},
+        "hunyuan":     {Name: "doc/ppt/hunyuan"},
+    },
+)
+if err != nil {
+    log.Fatal(err)
+}
+resolver.WithCacheTTL(5 * time.Minute)
+
+run := runner.NewRunner(
+    "app",
+    agent,
+    runner.WithPlugins(plugin.NewModelPrompt(resolver)),
+)
+```
+
+注意：
+
+- 注入的提示词是在每次模型请求前解析的，因此同时支持 Agent 级别切换
+  （`SetModel`、`SetModelByName`）和请求级别切换
+  （`agent.WithModel`、`agent.WithModelName`）。
+- 如果你同时配置了全局 System Prompt（例如
+  `llmagent.WithGlobalInstruction`），`ModelPrompt` 会在其前面再追加一层。
+- 当提示词来自 Langfuse 时，`ModelPrompt` 会把 prompt name/version 记录到
+  当前 OpenTelemetry（OTel）span 的 Langfuse 字段里，便于按提示词筛选。
 
 ##### 配置说明
 

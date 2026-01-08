@@ -645,6 +645,95 @@ eventChan, err := runner.Run(ctx, userID, sessionID, reasoningMessage,
 )
 ```
 
+##### Model-Specific System Prompts (Prompt Management)
+
+Switching the model does **not** automatically switch the system prompt.
+In real services, different model providers often need different system
+prompts (for example, different formatting constraints or safety policies).
+
+To avoid creating one Runner per prompt, you can use a Runner plugin to
+select and inject a prompt based on the current model name.
+
+The framework provides `plugin.ModelPrompt`, which runs before each model
+request and injects the resolved prompt into the request messages.
+
+###### Option 1: In-Memory Map
+
+Map keys should match `model.Info().Name` (the provider model name).
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/plugin"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
+)
+
+resolver := plugin.NewStaticModelPromptResolver(map[string]plugin.Prompt{
+    "gpt-4o-mini": plugin.SystemPrompt("System prompt for GPT."),
+    "hunyuan":     plugin.SystemPrompt("System prompt for Hunyuan."),
+})
+
+run := runner.NewRunner(
+    "app",
+    agent,
+    runner.WithPlugins(plugin.NewModelPrompt(resolver)),
+)
+```
+
+###### Option 2: Langfuse Prompt Management
+
+Langfuse provides prompt management via an HTTP (Hypertext Transfer Protocol)
+Application Programming Interface (API). This lets you update prompts without
+re-deploying your service.
+
+```go
+import (
+    "log"
+    "os"
+    "time"
+
+    "trpc.group/trpc-go/trpc-agent-go/plugin"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
+)
+
+client, err := plugin.NewLangfuseClient(plugin.LangfuseClientOptions{
+    BaseURL:   os.Getenv("LANGFUSE_BASE_URL"),
+    PublicKey: os.Getenv("LANGFUSE_PUBLIC_KEY"),
+    SecretKey: os.Getenv("LANGFUSE_SECRET_KEY"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resolver, err := plugin.NewLangfusePromptResolver(
+    client,
+    map[string]plugin.LangfusePromptRef{
+        "gpt-4o-mini": {Name: "doc/ppt/openai"},
+        "hunyuan":     {Name: "doc/ppt/hunyuan"},
+    },
+)
+if err != nil {
+    log.Fatal(err)
+}
+resolver.WithCacheTTL(5 * time.Minute)
+
+run := runner.NewRunner(
+    "app",
+    agent,
+    runner.WithPlugins(plugin.NewModelPrompt(resolver)),
+)
+```
+
+Notes:
+
+- The injected prompt is resolved per model request, so it works with both
+  agent-level switching (`SetModel`, `SetModelByName`) and per-request
+  switching (`agent.WithModel`, `agent.WithModelName`).
+- If you also configure a global system prompt (for example,
+  `llmagent.WithGlobalInstruction`), `ModelPrompt` prepends on top of it.
+- When the prompt comes from Langfuse, `ModelPrompt` records prompt
+  name/version on the current OpenTelemetry (OTel) span using Langfuse
+  attribute keys, so you can filter traces by prompt.
+
 ##### Configuration Details
 
 **WithModels Option**:
@@ -1749,6 +1838,95 @@ eventChan, err := runner.Run(ctx, userID, sessionID, visionMessage,
     agent.WithModelName("vision"),
 )
 ```
+
+##### Model-Specific System Prompts (Prompt Management)
+
+Switching the model does **not** automatically switch the system prompt.
+In real services, different model providers often need different system
+prompts (for example, different formatting constraints or safety policies).
+
+To avoid creating one Runner per prompt, you can use a Runner plugin to
+select and inject a prompt based on the current model name.
+
+The framework provides `plugin.ModelPrompt`, which runs before each model
+request and injects the resolved prompt into the request messages.
+
+###### Option 1: In-Memory Map
+
+Map keys should match `model.Info().Name` (the provider model name).
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/plugin"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
+)
+
+resolver := plugin.NewStaticModelPromptResolver(map[string]plugin.Prompt{
+    "claude-3-5-haiku-20241022": plugin.SystemPrompt("System prompt A."),
+    "claude-3-5-sonnet-20241022": plugin.SystemPrompt("System prompt B."),
+})
+
+run := runner.NewRunner(
+    "app",
+    agent,
+    runner.WithPlugins(plugin.NewModelPrompt(resolver)),
+)
+```
+
+###### Option 2: Langfuse Prompt Management
+
+Langfuse provides prompt management via an HTTP (Hypertext Transfer Protocol)
+Application Programming Interface (API). This lets you update prompts without
+re-deploying your service.
+
+```go
+import (
+    "log"
+    "os"
+    "time"
+
+    "trpc.group/trpc-go/trpc-agent-go/plugin"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
+)
+
+client, err := plugin.NewLangfuseClient(plugin.LangfuseClientOptions{
+    BaseURL:   os.Getenv("LANGFUSE_BASE_URL"),
+    PublicKey: os.Getenv("LANGFUSE_PUBLIC_KEY"),
+    SecretKey: os.Getenv("LANGFUSE_SECRET_KEY"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+resolver, err := plugin.NewLangfusePromptResolver(
+    client,
+    map[string]plugin.LangfusePromptRef{
+        "claude-3-5-haiku-20241022": {Name: "doc/ppt/haiku"},
+        "claude-3-5-sonnet-20241022": {Name: "doc/ppt/sonnet"},
+    },
+)
+if err != nil {
+    log.Fatal(err)
+}
+resolver.WithCacheTTL(5 * time.Minute)
+
+run := runner.NewRunner(
+    "app",
+    agent,
+    runner.WithPlugins(plugin.NewModelPrompt(resolver)),
+)
+```
+
+Notes:
+
+- The injected prompt is resolved per model request, so it works with both
+  agent-level switching (`SetModel`, `SetModelByName`) and per-request
+  switching (`agent.WithModel`, `agent.WithModelName`).
+- If you also configure a global system prompt (for example,
+  `llmagent.WithGlobalInstruction`), `ModelPrompt` prepends on top of it.
+- When the prompt comes from Langfuse, `ModelPrompt` records prompt
+  name/version on the current OpenTelemetry (OTel) span using Langfuse
+  attribute keys, so you can filter traces by prompt.
 
 ##### Configuration Details
 
