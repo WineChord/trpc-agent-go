@@ -74,6 +74,12 @@ func TestPlanner_BuildPlanInstr(t *testing.T) {
 			t.Errorf("BuildPlanningInstruction() missing concept: %s", concept)
 		}
 	}
+
+	// Avoid including tool-routing markers in the instruction, which may
+	// cause some models to emit fake tool calls as plain text.
+	if strings.Contains(instruction, "functions.") {
+		t.Error("BuildPlanningInstruction() contains `functions.` marker")
+	}
 }
 
 func TestPlanner_ProcessPlanResp_Nil(t *testing.T) {

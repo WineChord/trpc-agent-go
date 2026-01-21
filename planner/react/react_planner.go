@@ -146,6 +146,8 @@ func (p *Planner) buildPlannerInstruction() string {
 	highLevelPreamble := strings.Join([]string{
 		"When answering the question, try to leverage the available tools " +
 			"to gather the information instead of your memorized knowledge.",
+		"Each assistant message must end with either a tool call or a final " +
+			"answer. Do not stop after planning.",
 		"",
 		"Follow this process when answering the question: (1) first come up " +
 			"with a plan in natural language text format; (2) Then use tools to " +
@@ -180,12 +182,10 @@ func (p *Planner) buildPlannerInstruction() string {
 
 	actionPreamble := strings.Join([]string{
 		"Below are the requirements for the action:",
-		"If no tool is needed, explicitly state your next action in " +
-			"the first person ('I will...').",
+		"If no tool is needed, go directly to " + FinalAnswerTag + ".",
 		"If a tool is needed, call it using tool calling (not plain text). " +
 			"You may omit the 'I will...' sentence when calling tools.",
-		"Do not write fake tool invocations like `functions.web_fetch` or " +
-			"`web_fetch({...})` in your message content.",
+		"Do not write fake tool invocations in plain text.",
 		"Do not output JSON/code intended to represent a tool call.",
 		"After a tool call, wait for the tool result message before " +
 			"continuing.",
@@ -202,6 +202,8 @@ func (p *Planner) buildPlannerInstruction() string {
 
 	finalAnswerPreamble := strings.Join([]string{
 		"Below are the requirements for the final answer:",
+		"Inside " + FinalAnswerTag + ", output exactly one line in the form " +
+			"`FINAL ANSWER: <answer>`.",
 		"The final answer should be precise and follow query formatting " +
 			"requirements.",
 		"Some queries may not be answerable with the available tools and " +
@@ -218,8 +220,8 @@ func (p *Planner) buildPlannerInstruction() string {
 		"- Do not output a JSON object that 'looks like' a tool call.",
 		"- Use only tool names and parameters that are explicitly defined " +
 			"in the provided tool schemas.",
-		"- Never output tool-call placeholders like `functions.<tool>` in " +
-			"the assistant message content.",
+		"- Never output tool-call placeholders or routing markers in the " +
+			"assistant message content.",
 		"- If you cannot call a tool, do not pretend you did; ask for " +
 			"clarification or proceed without it.",
 	}, "\n")
