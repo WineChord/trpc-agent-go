@@ -533,7 +533,7 @@ func TestSkillsToolResultRequestProcessor_MaterializesIntoLastToolMsg(
 
 	require.Equal(t, baseOut, req.Messages[2].Content)
 	lastTool := req.Messages[3].Content
-	require.Contains(t, lastTool, baseOut)
+	require.NotContains(t, lastTool, baseOut)
 	require.Contains(t, lastTool, "[Loaded] calc")
 	require.Contains(t, lastTool, "B")
 	require.Contains(t, lastTool, "[Doc] USAGE.md")
