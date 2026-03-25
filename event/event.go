@@ -94,6 +94,10 @@ type Event struct {
 	// StateDelta contains state changes to be applied to the session.
 	StateDelta map[string][]byte `json:"stateDelta,omitempty"`
 
+	// Extensions stores optional event metadata in a namespaced,
+	// versioned JSON format.
+	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
+
 	// StructuredOutput carries a typed, in-memory structured output payload.
 	// This is not serialized and is meant for immediate consumer access.
 	StructuredOutput any `json:"-"`
@@ -157,12 +161,27 @@ func (e *Event) Clone() *Event {
 			copy(clone.StateDelta[k], v)
 		}
 	}
+	if e.Extensions != nil {
+		clone.Extensions = make(map[string]json.RawMessage)
+		for k, v := range e.Extensions {
+			clone.Extensions[k] = cloneRawMessage(v)
+		}
+	}
 	if e.Actions != nil {
 		clone.Actions = &EventActions{
 			SkipSummarization: e.Actions.SkipSummarization,
 		}
 	}
 	return &clone
+}
+
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	cloned := make([]byte, len(raw))
+	copy(cloned, raw)
+	return json.RawMessage(cloned)
 }
 
 // Filter checks if the event matches the specified filter key.

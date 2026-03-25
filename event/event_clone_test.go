@@ -11,6 +11,7 @@
 package event
 
 import (
+	"encoding/json"
 	"testing"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -26,6 +27,9 @@ func TestEvent_Clone_DeepCopy(t *testing.T) {
 		Author:             "tester",
 		LongRunningToolIDs: map[string]struct{}{"a": {}, "b": {}},
 		StateDelta:         map[string][]byte{"k": []byte("v")},
+		Extensions: map[string]json.RawMessage{
+			"ext": json.RawMessage(`{"name":"value"}`),
+		},
 	}
 
 	c := e.Clone()
@@ -35,11 +39,15 @@ func TestEvent_Clone_DeepCopy(t *testing.T) {
 	// Mutate clone and ensure original not affected.
 	c.LongRunningToolIDs["c"] = struct{}{}
 	c.StateDelta["k"][0] = 'x'
+	c.Extensions["ext"] = json.RawMessage(`{"name":"changed"}`)
 	if _, ok := e.LongRunningToolIDs["c"]; ok {
 		t.Errorf("original LongRunningToolIDs mutated by clone")
 	}
 	if string(e.StateDelta["k"]) == string(c.StateDelta["k"]) {
 		t.Errorf("expected deep copy of StateDelta")
+	}
+	if string(e.Extensions["ext"]) == string(c.Extensions["ext"]) {
+		t.Errorf("expected deep copy of Extensions")
 	}
 }
 
