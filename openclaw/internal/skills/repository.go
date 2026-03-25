@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
@@ -34,6 +35,8 @@ type SkillConfig struct {
 }
 
 type Repository struct {
+	mu sync.RWMutex
+
 	base skill.Repository
 
 	eligible map[string]struct{}
@@ -115,18 +118,27 @@ func NewRepository(roots []string, opts ...Option) (*Repository, error) {
 		}
 	}
 
-	r.index()
+	r.indexLocked()
 	return r, nil
 }
 
 func (r *Repository) Summaries() []skill.Summary {
-	if r.base == nil {
+	if r == nil {
 		return nil
 	}
-	in := r.base.Summaries()
+
+	r.mu.RLock()
+	base := r.base
+	eligible := copyStringSet(r.eligible)
+	r.mu.RUnlock()
+	if base == nil {
+		return nil
+	}
+
+	in := base.Summaries()
 	out := make([]skill.Summary, 0, len(in))
 	for _, s := range in {
-		if _, ok := r.eligible[s.Name]; !ok {
+		if _, ok := eligible[s.Name]; !ok {
 			continue
 		}
 		out = append(out, s)
@@ -138,8 +150,15 @@ func (r *Repository) Get(name string) (*skill.Skill, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, errors.New("empty skill name")
 	}
-	if _, ok := r.eligible[name]; !ok {
-		if reason := r.reasons[name]; reason != "" {
+
+	r.mu.RLock()
+	base := r.base
+	_, ok := r.eligible[name]
+	reason := r.reasons[name]
+	baseDir := r.baseDirs[name]
+	r.mu.RUnlock()
+	if !ok {
+		if reason != "" {
 			return nil, fmt.Errorf(
 				"skill %q is disabled: %s",
 				name,
@@ -148,15 +167,17 @@ func (r *Repository) Get(name string) (*skill.Skill, error) {
 		}
 		return nil, fmt.Errorf("skill %q is disabled", name)
 	}
+	if base == nil {
+		return nil, fmt.Errorf("skill %q not found", name)
+	}
 
-	s, err := r.base.Get(name)
+	s, err := base.Get(name)
 	if err != nil {
 		return nil, err
 	}
 
-	baseDir := r.baseDirs[name]
 	if baseDir == "" {
-		if p, err := r.base.Path(name); err == nil {
+		if p, err := base.Path(name); err == nil {
 			baseDir = p
 		}
 	}
@@ -183,8 +204,14 @@ func (r *Repository) Path(name string) (string, error) {
 	if strings.TrimSpace(name) == "" {
 		return "", errors.New("empty skill name")
 	}
-	if _, ok := r.eligible[name]; !ok {
-		if reason := r.reasons[name]; reason != "" {
+
+	r.mu.RLock()
+	base := r.base
+	_, ok := r.eligible[name]
+	reason := r.reasons[name]
+	r.mu.RUnlock()
+	if !ok {
+		if reason != "" {
 			return "", fmt.Errorf(
 				"skill %q is disabled: %s",
 				name,
@@ -193,7 +220,10 @@ func (r *Repository) Path(name string) (string, error) {
 		}
 		return "", fmt.Errorf("skill %q is disabled", name)
 	}
-	return r.base.Path(name)
+	if base == nil {
+		return "", fmt.Errorf("skill %q not found", name)
+	}
+	return base.Path(name)
 }
 
 func (r *Repository) SkillRunEnv(
@@ -208,12 +238,14 @@ func (r *Repository) SkillRunEnv(
 		return nil, nil
 	}
 
+	r.mu.RLock()
 	meta := r.metas[name]
 	primaryEnv := ""
 	if meta != nil {
 		primaryEnv = strings.TrimSpace(meta.PrimaryEnv)
 	}
 	skillKey := strings.TrimSpace(r.skillKey[name])
+	r.mu.RUnlock()
 	cfg, ok := r.resolveSkillConfig(skillKey, name)
 	if !ok {
 		return nil, nil
@@ -246,12 +278,20 @@ func (r *Repository) SkillRunEnv(
 func (r *Repository) DependencySources(
 	names []string,
 ) ([]deps.Source, error) {
-	if r == nil || r.base == nil {
+	if r == nil {
+		return nil, nil
+	}
+
+	r.mu.RLock()
+	base := r.base
+	metas := copyOpenClawMetadataMap(r.metas)
+	r.mu.RUnlock()
+	if base == nil {
 		return nil, nil
 	}
 
 	selected := normalizeSkillNames(names)
-	summaries := r.base.Summaries()
+	summaries := base.Summaries()
 	descriptions := make(map[string]string, len(summaries))
 	for _, summary := range summaries {
 		name := strings.TrimSpace(summary.Name)
@@ -263,7 +303,7 @@ func (r *Repository) DependencySources(
 
 	wantAll := len(selected) == 0
 	out := make([]deps.Source, 0, len(descriptions))
-	for name, meta := range r.metas {
+	for name, meta := range metas {
 		if meta == nil {
 			continue
 		}
@@ -295,10 +335,35 @@ func (r *Repository) DependencySources(
 	return out, nil
 }
 
-func (r *Repository) index() {
+func (r *Repository) Refresh() error {
+	if r == nil {
+		return nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.base == nil {
+		return nil
+	}
+	if refresher, ok := r.base.(skill.RefreshableRepository); ok {
+		if err := refresher.Refresh(); err != nil {
+			return err
+		}
+	}
+	r.indexLocked()
+	return nil
+}
+
+func (r *Repository) indexLocked() {
 	if r.base == nil {
 		return
 	}
+
+	r.eligible = map[string]struct{}{}
+	r.reasons = map[string]string{}
+	r.baseDirs = map[string]string{}
+	r.metas = map[string]*openClawMetadata{}
+	r.skillKey = map[string]string{}
 
 	sums := r.base.Summaries()
 	names := make([]string, 0, len(sums))
@@ -704,6 +769,41 @@ func copySkillEnv(env map[string]string) map[string]string {
 	return out
 }
 
+func copyStringSet(values map[string]struct{}) map[string]struct{} {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(values))
+	for value := range values {
+		out[value] = struct{}{}
+	}
+	return out
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func copyOpenClawMetadataMap(
+	values map[string]*openClawMetadata,
+) map[string]*openClawMetadata {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]*openClawMetadata, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -765,3 +865,4 @@ func isBlockedSkillEnvKey(key string) bool {
 }
 
 var _ skill.Repository = (*Repository)(nil)
+var _ skill.RefreshableRepository = (*Repository)(nil)

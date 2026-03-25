@@ -104,6 +104,8 @@ const (
 	defaultAutoExportMax     = 20
 )
 
+const warnSkillRepoRefreshPrefix = "skill repository refresh failed"
+
 const (
 	skillDirInputs = "inputs"
 	skillDirVenv   = ".venv"
@@ -486,6 +488,7 @@ func (t *RunTool) Call(
 			filteredOutputs.omittedNames,
 		)
 	}
+	t.maybeRefreshRepository(ctx, &out)
 	toolcache.StoreSkillRunOutputFilesFromContext(ctx, files)
 	return out, nil
 }
@@ -501,6 +504,28 @@ func isSkillLoadedInContext(ctx context.Context, name string) bool {
 	key := skill.LoadedKey(inv.AgentName, strings.TrimSpace(name))
 	v, ok := inv.Session.GetState(key)
 	return ok && len(v) > 0
+}
+
+func (t *RunTool) maybeRefreshRepository(
+	ctx context.Context,
+	out *runOutput,
+) {
+	if t == nil || out == nil {
+		return
+	}
+	refresher, ok := t.repo.(skill.RefreshableRepository)
+	if !ok {
+		return
+	}
+	if err := refresher.Refresh(); err != nil {
+		warn := fmt.Sprintf(
+			"%s: %v",
+			warnSkillRepoRefreshPrefix,
+			err,
+		)
+		log.WarnfContext(ctx, "%s", warn)
+		out.Warnings = append(out.Warnings, warn)
+	}
 }
 
 // StateDelta returns a stable, replayable artifact ref list when skill_run

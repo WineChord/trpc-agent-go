@@ -202,6 +202,80 @@ func TestRunTool_EditorText_ConflictsWithEditorEnv(t *testing.T) {
 	require.Contains(t, err.Error(), envEditor)
 }
 
+func TestRunTool_Call_RefreshesRepositoryOnSuccess(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, testSkillName)
+
+	base, err := skill.NewFSRepository(root)
+	require.NoError(t, err)
+	repo := &refreshTrackingRepo{base: base}
+	rt := NewRunTool(repo, localexec.New())
+
+	args := runInput{
+		Skill:   testSkillName,
+		Command: echoOK,
+		Timeout: timeoutSecSmall,
+	}
+	enc, err := jsonMarshal(args)
+	require.NoError(t, err)
+
+	res, err := rt.Call(context.Background(), enc)
+	require.NoError(t, err)
+
+	out := res.(runOutput)
+	require.Equal(t, 1, repo.refreshCount)
+	require.Empty(t, out.Warnings)
+}
+
+func TestRunTool_Call_RefreshWarningOnRefreshError(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, testSkillName)
+
+	base, err := skill.NewFSRepository(root)
+	require.NoError(t, err)
+	repo := &refreshTrackingRepo{
+		base:       base,
+		refreshErr: errors.New("refresh-fail"),
+	}
+	rt := NewRunTool(repo, localexec.New())
+
+	args := runInput{
+		Skill:   testSkillName,
+		Command: echoOK,
+		Timeout: timeoutSecSmall,
+	}
+	enc, err := jsonMarshal(args)
+	require.NoError(t, err)
+
+	res, err := rt.Call(context.Background(), enc)
+	require.NoError(t, err)
+
+	out := res.(runOutput)
+	require.Equal(t, 1, repo.refreshCount)
+	require.Len(t, out.Warnings, 1)
+	require.Contains(t, out.Warnings[0], warnSkillRepoRefreshPrefix)
+}
+
+func TestRunTool_Call_DoesNotRefreshWhenCallFails(t *testing.T) {
+	root := t.TempDir()
+	base, err := skill.NewFSRepository(root)
+	require.NoError(t, err)
+	repo := &refreshTrackingRepo{base: base}
+	rt := NewRunTool(repo, localexec.New())
+
+	args := runInput{
+		Skill:   testSkillName,
+		Command: echoOK,
+		Timeout: timeoutSecSmall,
+	}
+	enc, err := jsonMarshal(args)
+	require.NoError(t, err)
+
+	_, err = rt.Call(context.Background(), enc)
+	require.Error(t, err)
+	require.Zero(t, repo.refreshCount)
+}
+
 func TestRunTool_FailedRun_OmitsEmptyOutputFiles(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, testSkillName)
@@ -4116,6 +4190,29 @@ func (*engineExec) CodeBlockDelimiter() codeexecutor.CodeBlockDelimiter {
 }
 
 func (e *engineExec) Engine() codeexecutor.Engine { return e.eng }
+
+type refreshTrackingRepo struct {
+	base         skill.Repository
+	refreshErr   error
+	refreshCount int
+}
+
+func (r *refreshTrackingRepo) Summaries() []skill.Summary {
+	return r.base.Summaries()
+}
+
+func (r *refreshTrackingRepo) Get(name string) (*skill.Skill, error) {
+	return r.base.Get(name)
+}
+
+func (r *refreshTrackingRepo) Path(name string) (string, error) {
+	return r.base.Path(name)
+}
+
+func (r *refreshTrackingRepo) Refresh() error {
+	r.refreshCount++
+	return r.refreshErr
+}
 
 type pathErrRepo struct {
 	err error

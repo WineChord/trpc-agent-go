@@ -114,7 +114,7 @@ func (t *ListTool) Call(ctx context.Context, args []byte) (any, error) {
 	}
 	mode := normalizeListMode(in.Mode)
 
-	if t.repo == nil || t.repo.base == nil {
+	if t.repo == nil {
 		return listOutput{Total: 0}, nil
 	}
 
@@ -135,11 +135,22 @@ func normalizeListMode(raw string) string {
 }
 
 func (t *ListTool) buildOutput(mode string) listOutput {
-	if t == nil || t.repo == nil || t.repo.base == nil {
+	if t == nil || t.repo == nil {
 		return listOutput{Total: 0}
 	}
 
-	sums := t.repo.base.Summaries()
+	repo := t.repo
+	repo.mu.RLock()
+	base := repo.base
+	eligible := copyStringSet(repo.eligible)
+	reasons := copyStringMap(repo.reasons)
+	metas := copyOpenClawMetadataMap(repo.metas)
+	repo.mu.RUnlock()
+	if base == nil {
+		return listOutput{Total: 0}
+	}
+
+	sums := base.Summaries()
 	sort.Slice(sums, func(i, j int) bool {
 		return sums[i].Name < sums[j].Name
 	})
@@ -153,7 +164,12 @@ func (t *ListTool) buildOutput(mode string) listOutput {
 			continue
 		}
 
-		entry := t.entryForSummary(s)
+		entry := entryForSummary(
+			s,
+			eligible,
+			reasons,
+			metas,
+		)
 		if mode == skillListModeEnabled && !entry.Enabled {
 			continue
 		}
@@ -172,27 +188,25 @@ func (t *ListTool) buildOutput(mode string) listOutput {
 	return out
 }
 
-func (t *ListTool) entryForSummary(s skill.Summary) skillEntry {
-	repo := t.repo
+func entryForSummary(
+	s skill.Summary,
+	eligible map[string]struct{},
+	reasons map[string]string,
+	metas map[string]*openClawMetadata,
+) skillEntry {
 	name := strings.TrimSpace(s.Name)
-	enabled := false
-	if repo != nil {
-		_, enabled = repo.eligible[name]
-	}
+	_, enabled := eligible[name]
 
 	entry := skillEntry{
 		Name:        name,
 		Description: strings.TrimSpace(s.Description),
 		Enabled:     enabled,
 	}
-	if !enabled && repo != nil {
-		entry.Reason = strings.TrimSpace(repo.reasons[name])
+	if !enabled {
+		entry.Reason = strings.TrimSpace(reasons[name])
 	}
 
-	meta := (*openClawMetadata)(nil)
-	if repo != nil {
-		meta = repo.metas[name]
-	}
+	meta := metas[name]
 	if meta == nil {
 		return entry
 	}

@@ -650,6 +650,58 @@ x
 	require.Error(t, err)
 }
 
+func TestRepository_Refresh_AddsNewSkill(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "one", `---
+name: one
+description: first
+---
+
+body
+`)
+
+	r, err := NewRepository([]string{root})
+	require.NoError(t, err)
+	require.Len(t, r.Summaries(), 1)
+
+	writeSkill(t, root, "two", `---
+name: two
+description: second
+---
+
+body
+`)
+
+	require.NoError(t, r.Refresh())
+	require.Len(t, r.Summaries(), 2)
+
+	got, err := r.Get("two")
+	require.NoError(t, err)
+	require.Equal(t, "two", got.Summary.Name)
+}
+
+func TestRepository_Refresh_RemovesDeletedSkill(t *testing.T) {
+	root := t.TempDir()
+	dir := writeSkill(t, root, "gone", `---
+name: gone
+description: test
+---
+
+body
+`)
+
+	r, err := NewRepository([]string{root})
+	require.NoError(t, err)
+	require.Len(t, r.Summaries(), 1)
+
+	require.NoError(t, os.RemoveAll(dir))
+	require.NoError(t, r.Refresh())
+	require.Empty(t, r.Summaries())
+
+	_, err = r.Get("gone")
+	require.Error(t, err)
+}
+
 func TestRepository_PathDisabledHasReason(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, "needenv", `---
