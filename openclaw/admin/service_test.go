@@ -1968,12 +1968,14 @@ func TestService_ChatsPageAndJSON(t *testing.T) {
 				Current:      true,
 			}, {
 				Kind:      chatHistoryItemKindTurn,
+				SessionID: "wecom:dm:alice:171",
 				Role:      "assistant",
 				Speaker:   "林妹妹",
 				Text:      "I am using this chat's current name.",
 				Timestamp: time.Unix(1700000010, 0),
 			}, {
 				Kind:      chatHistoryItemKindTurn,
+				SessionID: "wecom:dm:alice:170",
 				Role:      "assistant",
 				Speaker:   "林妹妹",
 				Text:      "Older session reply.",
@@ -2041,6 +2043,11 @@ func TestService_ChatsPageAndJSON(t *testing.T) {
 		t,
 		rec.Body.String(),
 		"\"text\": \"I am using this chat's current name.\"",
+	)
+	require.Contains(
+		t,
+		rec.Body.String(),
+		"\"session_id\": \"wecom:dm:alice:171\"",
 	)
 	require.Contains(t, rec.Body.String(), "\"next_cursor\": \"2\"")
 	require.Equal(t, "wecom:dm:alice", chats.historyChatID)

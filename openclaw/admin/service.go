@@ -5334,6 +5334,10 @@ const adminPageHTML = `<!doctype html>
 
       const renderSessionItem = (item) => {
         const wrapper = createDiv("chat-timeline-session");
+        wrapper.dataset.chatHistoryItemKind = itemKindSession;
+        if (item && typeof item.session_id === "string") {
+          wrapper.dataset.chatHistorySessionId = item.session_id;
+        }
         const head = createDiv("chat-timeline-session-head");
         const copy = document.createElement("div");
         const title = createDiv(
@@ -5359,6 +5363,10 @@ const adminPageHTML = `<!doctype html>
       const renderTurnItem = (item) => {
         const article = document.createElement("article");
         article.className = "chat-turn";
+        article.dataset.chatHistoryItemKind = itemKindTurn;
+        if (item && typeof item.session_id === "string") {
+          article.dataset.chatHistorySessionId = item.session_id;
+        }
         const head = createDiv("chat-turn-head");
         head.appendChild(
           createDiv("chat-turn-speaker", speakerLabel(item))
@@ -5408,6 +5416,28 @@ const adminPageHTML = `<!doctype html>
         }
       };
 
+      const normalizeHistoryItems = (items) => {
+        if (!items) return;
+        let activeSessionID = "";
+        Array.from(items.children).forEach((node) => {
+          if (!node.dataset) return;
+          const kind = node.dataset.chatHistoryItemKind || "";
+          const sessionID = node.dataset.chatHistorySessionId || "";
+          if (!kind) return;
+          if (kind === itemKindSession) {
+            if (sessionID && sessionID === activeSessionID) {
+              node.remove();
+              return;
+            }
+            activeSessionID = sessionID;
+            return;
+          }
+          if (kind === itemKindTurn && sessionID) {
+            activeSessionID = sessionID;
+          }
+        });
+      };
+
       const fetchHistory = async (root, cursor) => {
         const path = root.getAttribute("data-chat-history-path") || "";
         const chatID = root.getAttribute("data-chat-id") || "";
@@ -5455,6 +5485,7 @@ const adminPageHTML = `<!doctype html>
           } else {
             items.appendChild(fragment);
           }
+          normalizeHistoryItems(items);
 
           const loaded = Number(
             root.getAttribute("data-chat-history-loaded") || "0"
