@@ -463,6 +463,7 @@ const (
 	deepSeekAPIHost = "api.deepseek.com"
 	qwenAPIHost     = "dashscope.aliyuncs.com"
 	hunyuanAPIHost  = "api.hunyuan.cloud.tencent.com"
+	glmAPIHost      = "open.bigmodel.cn"
 
 	openAIAPIKeyEnvName  = "OPENAI_API_KEY"
 	openAIBaseURLEnvName = "OPENAI_BASE_URL"
@@ -3888,7 +3889,8 @@ func parseOpenAIVariant(
 	case openai.VariantOpenAI,
 		openai.VariantDeepSeek,
 		openai.VariantHunyuan,
-		openai.VariantQwen:
+		openai.VariantQwen,
+		openai.VariantGLM:
 		return variant, nil
 	default:
 		return "", fmt.Errorf("unsupported openai variant: %s", raw)
@@ -3907,6 +3909,8 @@ func inferOpenAIVariant(baseURL string) openai.Variant {
 		return openai.VariantQwen
 	case strings.EqualFold(host, hunyuanAPIHost):
 		return openai.VariantHunyuan
+	case strings.EqualFold(host, glmAPIHost):
+		return openai.VariantGLM
 	default:
 		return openai.VariantOpenAI
 	}
