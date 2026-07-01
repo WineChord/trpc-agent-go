@@ -89,3 +89,32 @@ func TestFinalResultChunksContext(t *testing.T) {
 	ctx = context.WithValue(ctx, contextKeyFinalResultChunks{}, false)
 	require.False(t, FinalResultChunksFromContext(ctx))
 }
+
+func TestToolResultAttachmentBudget(t *testing.T) {
+	require.Equal(t, 3, ReserveToolResultAttachments(nil, 3))
+	require.Equal(
+		t,
+		3,
+		ReserveToolResultAttachments(context.Background(), 3),
+	)
+	require.Equal(t, 0, ReserveToolResultAttachments(nil, 0))
+	require.Equal(t, 0, ReserveToolResultAttachments(nil, -1))
+
+	ctx := WithToolResultAttachmentBudget(context.Background(), 5)
+	require.Equal(t, 3, ReserveToolResultAttachments(ctx, 3))
+	require.Equal(t, 2, ReserveToolResultAttachments(ctx, 3))
+	require.Equal(t, 0, ReserveToolResultAttachments(ctx, 1))
+}
+
+func TestToolResultAttachmentBudget_ZeroMax(t *testing.T) {
+	ctx := WithToolResultAttachmentBudget(context.Background(), 0)
+	require.Equal(t, 0, ReserveToolResultAttachments(ctx, 1))
+}
+
+func TestEnsureToolResultAttachmentBudget_PreservesExisting(t *testing.T) {
+	ctx := WithToolResultAttachmentBudget(context.Background(), 2)
+	ctx = EnsureToolResultAttachmentBudget(ctx, 5)
+
+	require.Equal(t, 2, ReserveToolResultAttachments(ctx, 5))
+	require.Equal(t, 0, ReserveToolResultAttachments(ctx, 1))
+}

@@ -2558,6 +2558,11 @@ func TestNewAgent_SandboxOpenClawToolingGuidanceMatchesTools(t *testing.T) {
 		content,
 		"does not automatically mount host paths",
 	)
+	require.Contains(
+		t,
+		content,
+		"Do not use host system package managers",
+	)
 	require.NotContains(
 		t,
 		content,
@@ -2731,6 +2736,46 @@ func TestOpenClawToolingGuidanceKeepsSecretBanAbsolute(t *testing.T) {
 		t,
 		openClawToolingGuidance,
 		"secrets, or large transcripts in memory files unless",
+	)
+}
+
+func TestOpenClawToolingGuidanceAvoidsLocalBrowserMedia(t *testing.T) {
+	t.Parallel()
+
+	require.Contains(
+		t,
+		openClawToolingGuidance,
+		"Do not open local files through browser",
+	)
+	require.Contains(
+		t,
+		openClawToolingGuidance,
+		"normal browser policy blocks those paths",
+	)
+	require.Contains(
+		t,
+		browserToolingGuidance,
+		"Do not use browser to open local or generated files",
+	)
+	require.Contains(
+		t,
+		browserToolingGuidance,
+		"MEDIA or MEDIA_DIR",
+	)
+}
+
+func TestOpenClawToolingGuidanceAvoidsSystemPackageManagers(t *testing.T) {
+	t.Parallel()
+
+	require.Contains(
+		t,
+		openClawToolingGuidance,
+		"Do not use host system package managers",
+	)
+	require.Contains(
+		t,
+		openClawToolingGuidance,
+		"use preconfigured dependencies or ask for an explicit setup flow",
 	)
 }
 

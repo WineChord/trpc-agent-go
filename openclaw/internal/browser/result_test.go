@@ -112,6 +112,14 @@ func TestNewBaseResult_DefaultsDriverType(t *testing.T) {
 	got := newBaseResult(actionSnapshot, defaultProfileName, "", false)
 	require.Equal(t, driverTypePlaywrightMCP, got.Driver)
 	require.Equal(t, actionSnapshot, got.Action)
+	require.NotContains(t, got.Supported, actionEvaluate)
+}
+
+func TestNewBaseResult_ShowsEvaluateWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	got := newBaseResult(actionSnapshot, defaultProfileName, "", true)
+	require.Contains(t, got.Supported, actionEvaluate)
 }
 
 func TestSupportedActionsForDriver_HidesServerOnlyActions(t *testing.T) {
@@ -120,6 +128,7 @@ func TestSupportedActionsForDriver_HidesServerOnlyActions(t *testing.T) {
 	mcpActions := supportedActionsForDriver(driverTypePlaywrightMCP)
 	require.Contains(t, mcpActions, actionNavigate)
 	require.Contains(t, mcpActions, actionAct)
+	require.Contains(t, mcpActions, actionEvaluate)
 	require.NotContains(t, mcpActions, actionCookies)
 	require.NotContains(t, mcpActions, actionStorage)
 	require.NotContains(t, mcpActions, actionDownload)
