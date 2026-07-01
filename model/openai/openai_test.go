@@ -4361,6 +4361,19 @@ func TestWithVariant(t *testing.T) {
 		assert.True(t, opts.variantSet, "expected variantSet to be true")
 	})
 
+	t.Run("glm variant", func(t *testing.T) {
+		opts := &options{}
+		WithVariant(VariantGLM)(opts)
+
+		assert.Equal(
+			t,
+			VariantGLM,
+			opts.Variant,
+			"expected variant to be VariantGLM",
+		)
+		assert.True(t, opts.variantSet, "expected variantSet to be true")
+	})
+
 	t.Run("variant in model creation", func(t *testing.T) {
 		m := New("test-model", WithAPIKey("test-key"), WithVariant(VariantHunyuan))
 		require.NotNil(t, m, "expected model to be created")
@@ -6108,6 +6121,95 @@ func TestCreateFinalResponseFinishReason(t *testing.T) {
 	require.NotNil(t, finalResponse.Choices[0].FinishReason)
 	assert.Equal(t, "stop",
 		*finalResponse.Choices[0].FinishReason)
+}
+
+func TestCreateFinalResponseGLMReasoningContentFallback(t *testing.T) {
+	t.Parallel()
+
+	m := New("glm50", WithVariant(VariantGLM))
+	acc := openai.ChatCompletionAccumulator{
+		ChatCompletion: openai.ChatCompletion{
+			ID:    "acc-id",
+			Model: "glm50",
+			Choices: []openai.ChatCompletionChoice{{
+				Index:        0,
+				FinishReason: "stop",
+				Message: openai.ChatCompletionMessage{
+					Content: "",
+				},
+			}},
+		},
+	}
+
+	resp := m.createFinalResponse(acc, false, nil, "收到")
+	require.NotNil(t, resp)
+	require.Len(t, resp.Choices, 1)
+	require.Equal(t, "收到", resp.Choices[0].Message.Content)
+	require.Equal(t, "收到", resp.Choices[0].Message.ReasoningContent)
+}
+
+func TestCreateFinalResponseGLMReasoningContentFallbackSkipsToolCall(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	m := New("glm50", WithVariant(VariantGLM))
+	acc := openai.ChatCompletionAccumulator{
+		ChatCompletion: openai.ChatCompletion{
+			ID:    "acc-id",
+			Model: "glm50",
+			Choices: []openai.ChatCompletionChoice{{
+				Index: 0,
+				Message: openai.ChatCompletionMessage{
+					Content: "",
+				},
+			}},
+		},
+	}
+
+	resp := m.createFinalResponse(
+		acc,
+		true,
+		[]model.ToolCall{{
+			ID:   "call-1",
+			Type: functionToolType,
+			Function: model.FunctionDefinitionParam{
+				Name: "lookup",
+			},
+		}},
+		"need tool",
+	)
+	require.NotNil(t, resp)
+	require.Len(t, resp.Choices, 1)
+	require.Empty(t, resp.Choices[0].Message.Content)
+	require.Equal(t, "need tool", resp.Choices[0].Message.ReasoningContent)
+	require.Len(t, resp.Choices[0].Message.ToolCalls, 1)
+}
+
+func TestCreateFinalResponseReasoningContentNoFallbackForOpenAI(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	m := New("gpt-5", WithVariant(VariantOpenAI))
+	acc := openai.ChatCompletionAccumulator{
+		ChatCompletion: openai.ChatCompletion{
+			ID:    "acc-id",
+			Model: "gpt-5",
+			Choices: []openai.ChatCompletionChoice{{
+				Index: 0,
+				Message: openai.ChatCompletionMessage{
+					Content: "",
+				},
+			}},
+		},
+	}
+
+	resp := m.createFinalResponse(acc, false, nil, "thinking")
+	require.NotNil(t, resp)
+	require.Len(t, resp.Choices, 1)
+	require.Empty(t, resp.Choices[0].Message.Content)
+	require.Equal(t, "thinking", resp.Choices[0].Message.ReasoningContent)
 }
 
 // TestCreateFinalResponseUsageConditional verifies that Usage is only set on the
