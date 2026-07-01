@@ -15,19 +15,23 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 	toolpkg "trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 const testPNG = "image/png"
 
 type fakeDriver struct {
+	mu          sync.Mutex
 	startStatus driverStatus
 	startErr    error
 	status      driverStatus
 	statusErr   error
 	stopErr     error
+	stopCount   int
 	callResult  map[string]any
 	callErr     error
 	calls       []fakeCall
@@ -81,7 +85,18 @@ func (f *fakeDriver) Status(ctx context.Context) (driverStatus, error) {
 	return f.status, nil
 }
 
-func (f *fakeDriver) Stop() error { return f.stopErr }
+func (f *fakeDriver) Stop() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopCount++
+	return f.stopErr
+}
+
+func (f *fakeDriver) StopCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopCount
+}
 
 func (f *fakeDriver) Call(
 	ctx context.Context,
@@ -584,6 +599,8 @@ func TestToolCall_UsesBrowserServerDriverForHostTarget(t *testing.T) {
 		driverTypeBrowserServer,
 		result.Profiles[0].Driver,
 	)
+	require.NotContains(t, result.Supported, actionEvaluate)
+	require.NotContains(t, result.Profiles[0].Supported, actionEvaluate)
 }
 
 func TestToolCall_StatusActionUsesHandleStatus(t *testing.T) {
@@ -764,15 +781,86 @@ func TestNewTool_DeclarationExposesSchema(t *testing.T) {
 	decl := tool.Declaration()
 	require.Equal(t, ToolName, decl.Name)
 	require.Contains(t, decl.Description, "current browser tab")
+	require.Contains(t, decl.Description, "not for direct inspection")
+	require.Contains(t, decl.Description, "file://, data:, or ad hoc localhost")
+	require.Contains(t, decl.Description, "MEDIA or MEDIA_DIR")
+	require.Contains(t, decl.Description, "evaluate action is disabled")
+	require.NotContains(t, decl.Description, "Use evaluate only")
 	require.Contains(t, decl.Description, "Omit target")
 	require.NotNil(t, decl.InputSchema)
 	require.Equal(t, "object", decl.InputSchema.Type)
 	require.Contains(t, decl.InputSchema.Properties, "action")
+	require.Contains(
+		t,
+		decl.InputSchema.Properties["action"].Description,
+		"Supported actions include",
+	)
+	require.Contains(
+		t,
+		decl.InputSchema.Properties["action"].Description,
+		"evaluate is not available",
+	)
+	require.Contains(
+		t,
+		decl.InputSchema.Properties["fn"].Description,
+		"evaluate is not available",
+	)
+	require.Contains(
+		t,
+		decl.InputSchema.Properties["request"].Properties["fn"].
+			Description,
+		"evaluate is not available",
+	)
+	require.NotContains(
+		t,
+		decl.InputSchema.Properties["action"].Description,
+		"act, evaluate",
+	)
 	require.Contains(t, decl.InputSchema.Properties, "request")
 	require.Contains(
 		t,
 		decl.InputSchema.Properties["target"].Description,
 		"only use sandbox or node when configured",
+	)
+}
+
+func TestNewTool_DeclarationReflectsEvaluateEnabled(t *testing.T) {
+	t.Parallel()
+
+	evaluateEnabled := true
+	tool, err := NewTool(Config{
+		EvaluateEnabled: &evaluateEnabled,
+		Profiles: []ProfileConfig{{
+			Name:      defaultProfileName,
+			Transport: transportStdio,
+			Command:   "npx",
+		}},
+	})
+	require.NoError(t, err)
+
+	decl := tool.Declaration()
+	require.Contains(t, decl.Description, "Use evaluate only")
+	require.NotContains(t, decl.Description, "evaluate action is disabled")
+	require.Contains(
+		t,
+		decl.InputSchema.Properties["action"].Description,
+		"act, evaluate",
+	)
+	require.NotContains(
+		t,
+		decl.InputSchema.Properties["action"].Description,
+		"evaluate is not available",
+	)
+	require.NotContains(
+		t,
+		decl.InputSchema.Properties["fn"].Description,
+		"evaluate is not available",
+	)
+	require.NotContains(
+		t,
+		decl.InputSchema.Properties["request"].Properties["fn"].
+			Description,
+		"evaluate is not available",
 	)
 }
 
@@ -855,6 +943,63 @@ func TestToolCall_StartAndStop(t *testing.T) {
 	stopped := raw.(Result)
 	require.Equal(t, actionStop, stopped.Action)
 	require.Equal(t, stateStopped, stopped.State)
+}
+
+func TestToolCall_CanceledInvocationCleanupStopsUsedDriver(t *testing.T) {
+	t.Parallel()
+
+	drv := &fakeDriver{}
+	tool := newTestTool(drv)
+	baseCtx, cancel := context.WithCancel(context.Background())
+	inv := agent.NewInvocation()
+	ctx := agent.NewInvocationContext(baseCtx, inv)
+
+	_, err := tool.Call(
+		ctx,
+		mustJSON(t, map[string]any{"action": actionSnapshot}),
+	)
+	require.NoError(t, err)
+	require.Equal(t, 0, drv.StopCount())
+
+	cancel()
+	inv.CleanupNotice(ctx)
+	require.Eventually(t, func() bool {
+		return drv.StopCount() == 1
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestToolCall_SuccessfulInvocationCleanupKeepsUsedDriver(t *testing.T) {
+	t.Parallel()
+
+	drv := &fakeDriver{}
+	tool := newTestTool(drv)
+	inv := agent.NewInvocation()
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	_, err := tool.Call(
+		ctx,
+		mustJSON(t, map[string]any{"action": actionSnapshot}),
+	)
+	require.NoError(t, err)
+
+	inv.CleanupNotice(ctx)
+	require.Never(t, func() bool {
+		return drv.StopCount() != 0
+	}, 100*time.Millisecond, 10*time.Millisecond)
+}
+
+func TestToolCloseStopsDrivers(t *testing.T) {
+	t.Parallel()
+
+	profileDriver := &fakeDriver{}
+	serverDriver := &fakeDriver{}
+	tool := newTestTool(profileDriver)
+	tool.serverDrivers["node"] = serverDriver
+
+	require.NoError(t, tool.Close())
+	require.Equal(t, 1, profileDriver.StopCount())
+	require.Equal(t, 1, serverDriver.StopCount())
+	require.Empty(t, tool.serverDrivers)
 }
 
 func TestToolCall_FocusRefreshesTabs(t *testing.T) {

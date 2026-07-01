@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -73,6 +75,11 @@ const (
 	targetHost    = "host"
 	targetSandbox = "sandbox"
 	targetNode    = "node"
+)
+
+const (
+	cancelCleanupStateKey     = "__openclaw_browser_cancel_cleanup__"
+	cancelCleanupNoticePrefix = "__openclaw_browser_cancel_cleanup:"
 )
 
 const (
@@ -146,6 +153,28 @@ func supportedActionsForDriver(driverType string) []string {
 		return append([]string(nil), supportedActions...)
 	}
 	return append([]string(nil), supportedPlaywrightMCPActions...)
+}
+
+func visibleActionsForDriver(
+	driverType string,
+	evaluateEnabled bool,
+) []string {
+	actions := supportedActionsForDriver(driverType)
+	if evaluateEnabled {
+		return actions
+	}
+	return filterBrowserAction(actions, actionEvaluate)
+}
+
+func filterBrowserAction(actions []string, hidden string) []string {
+	out := actions[:0]
+	for _, action := range actions {
+		if action == hidden {
+			continue
+		}
+		out = append(out, action)
+	}
+	return out
 }
 
 type actRequest struct {
@@ -263,6 +292,11 @@ type Tool struct {
 	serverDrivers   map[string]driver
 }
 
+type cancelCleanupRegistry struct {
+	mu       sync.Mutex
+	profiles map[string]struct{}
+}
+
 // NewTool creates a native browser tool backed by MCP or browser-server.
 func NewTool(cfg Config) (*Tool, error) {
 	resolved, err := resolveConfig(cfg)
@@ -330,19 +364,71 @@ func newToolWithDrivers(
 
 func (t *Tool) Declaration() *tool.Declaration {
 	return &tool.Declaration{
-		Name: ToolName,
-		Description: "Control a real browser through OpenClaw's " +
-			"native browser contract. Prefer snapshot + act for UI " +
-			"automation. Keep using the same targetId after tabs or " +
-			"snapshot calls. Use profile=\"chrome\" when the user " +
-			"mentions a browser extension, relay, attach tab, or " +
-			"their current browser tab. Omit target for the default " +
-			"host browser. Only set target=\"sandbox\" or " +
-			"target=\"node\" when the runtime configuration exposes " +
-			"those browser servers. Avoid evaluate unless the " +
-			"task truly requires custom page JavaScript.",
-		InputSchema: browserSchema(),
+		Name:        ToolName,
+		Description: browserDescription(t.evaluateEnabled),
+		InputSchema: browserSchema(t.evaluateEnabled),
 	}
+}
+
+// Close releases browser profile drivers owned by this tool.
+func (t *Tool) Close() error {
+	if t == nil {
+		return nil
+	}
+
+	var errs []error
+	for _, drv := range t.drivers {
+		if drv == nil {
+			continue
+		}
+		if err := drv.Stop(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	t.serverDriversMu.Lock()
+	serverDrivers := make([]driver, 0, len(t.serverDrivers))
+	for _, drv := range t.serverDrivers {
+		serverDrivers = append(serverDrivers, drv)
+	}
+	t.serverDrivers = make(map[string]driver)
+	t.serverDriversMu.Unlock()
+	for _, drv := range serverDrivers {
+		if drv == nil {
+			continue
+		}
+		if err := drv.Stop(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+func browserDescription(evaluateEnabled bool) string {
+	description := "Control a real browser through OpenClaw's " +
+		"native browser contract. Use it for live web pages, " +
+		"public URLs, and configured browser profiles, not for " +
+		"direct inspection of local or generated files. Do not " +
+		"navigate to file://, data:, or ad hoc localhost/127.0.0.1 " +
+		"URLs unless the runtime configuration explicitly exposes " +
+		"that server; normal browser policy may block those paths. " +
+		"For local images, PDFs, audio, video, or generated " +
+		"artifacts, use file/document/exec tools and MEDIA or " +
+		"MEDIA_DIR outputs instead. Prefer snapshot + act for UI " +
+		"automation. Keep using the same targetId after tabs or " +
+		"snapshot calls. Use profile=\"chrome\" when the user " +
+		"mentions a browser extension, relay, attach tab, or " +
+		"their current browser tab. Omit target for the default " +
+		"host browser. Only set target=\"sandbox\" or " +
+		"target=\"node\" when the runtime configuration exposes " +
+		"those browser servers."
+	if evaluateEnabled {
+		return description + " Use evaluate only when the task truly " +
+			"requires custom page JavaScript."
+	}
+	return description + " The evaluate action is disabled in this " +
+		"runtime."
 }
 
 func (t *Tool) Call(ctx context.Context, args []byte) (any, error) {
@@ -384,6 +470,7 @@ func (t *Tool) Call(ctx context.Context, args []byte) (any, error) {
 		return nil, err
 	}
 	driverType := t.driverTypeForInput(profileName, in)
+	t.registerCancelCleanup(ctx, profileName, drv)
 
 	switch actionKey {
 	case strings.ToLower(actionStart):
@@ -530,7 +617,80 @@ func (t *Tool) Call(ctx context.Context, args []byte) (any, error) {
 	}
 }
 
-func browserSchema() *tool.Schema {
+func (t *Tool) registerCancelCleanup(
+	ctx context.Context,
+	profile string,
+	drv driver,
+) {
+	if drv == nil {
+		return
+	}
+	inv, ok := agent.InvocationFromContext(ctx)
+	if !ok || inv == nil {
+		return
+	}
+
+	reg, ok := agent.GetStateValue[*cancelCleanupRegistry](
+		inv,
+		cancelCleanupStateKey,
+	)
+	if !ok || reg == nil {
+		reg = &cancelCleanupRegistry{
+			profiles: make(map[string]struct{}),
+		}
+		inv.SetState(cancelCleanupStateKey, reg)
+	}
+	cleanupKey := fmt.Sprintf("%s/%p", profile, drv)
+	if !reg.register(cleanupKey) {
+		return
+	}
+
+	noticeKey := cancelCleanupNoticePrefix + cleanupKey
+	ch := inv.AddNoticeChannel(ctx, noticeKey)
+	if ch == nil {
+		return
+	}
+	go func(runCtx context.Context) {
+		<-ch
+		if runCtx.Err() == nil {
+			return
+		}
+		if err := drv.Stop(); err != nil {
+			log.Warnf(
+				"close canceled browser profile %q failed: %v",
+				profile,
+				err,
+			)
+		}
+	}(ctx)
+}
+
+func (r *cancelCleanupRegistry) register(profile string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.profiles == nil {
+		r.profiles = make(map[string]struct{})
+	}
+	if _, ok := r.profiles[profile]; ok {
+		return false
+	}
+	r.profiles[profile] = struct{}{}
+	return true
+}
+
+func browserSchema(evaluateEnabled bool) *tool.Schema {
+	actionDescription := "Browser action. Supported actions include: " +
+		strings.Join(visibleActionsForDriver(
+			driverTypeBrowserServer,
+			evaluateEnabled,
+		), ", ") + "."
+	if !evaluateEnabled {
+		actionDescription += " evaluate is not available."
+	}
+	fnDescription := evaluateFunctionDescription(evaluateEnabled)
 	requestProps := map[string]*tool.Schema{
 		"kind":        stringSchema("Browser act kind."),
 		"targetId":    stringSchema("Tab target id from tabs output."),
@@ -565,11 +725,11 @@ func browserSchema() *tool.Schema {
 		"loadState": stringSchema("Load state for wait."),
 		"textGone":  stringSchema("Text that must disappear."),
 		"timeoutMs": numberSchema("Timeout in milliseconds."),
-		"fn":        stringSchema("Page function for evaluate."),
+		"fn":        stringSchema(fnDescription),
 	}
 
 	properties := map[string]*tool.Schema{
-		"action": stringSchema("Browser action."),
+		"action": stringSchema(actionDescription),
 		"target": stringSchema(
 			"Browser target. Omit for default host; only use " +
 				"sandbox or node when configured.",
@@ -651,7 +811,7 @@ func browserSchema() *tool.Schema {
 		"timeMs":    numberSchema("Wait duration."),
 		"textGone":  stringSchema("Text that must disappear."),
 		"loadState": stringSchema("Wait load state."),
-		"fn":        stringSchema("Evaluate function."),
+		"fn":        stringSchema(fnDescription),
 		"request": {
 			Type:       "object",
 			Properties: requestProps,
@@ -663,6 +823,13 @@ func browserSchema() *tool.Schema {
 		Required:   []string{"action"},
 		Properties: properties,
 	}
+}
+
+func evaluateFunctionDescription(evaluateEnabled bool) string {
+	if evaluateEnabled {
+		return "Evaluate function."
+	}
+	return "Evaluate function; evaluate is not available."
 }
 
 func stringSchema(desc string) *tool.Schema {
@@ -811,8 +978,9 @@ func (t *Tool) handleProfiles(
 		DefaultProfile:  t.defaultProfile,
 		Driver:          ToolName,
 		EvaluateEnabled: t.evaluateEnabled,
-		Supported: supportedActionsForDriver(
+		Supported: visibleActionsForDriver(
 			t.driverTypeForProfile(t.defaultProfile),
+			t.evaluateEnabled,
 		),
 		Profiles: make([]ProfileInfo, 0, len(t.profiles)),
 	}
@@ -825,7 +993,7 @@ func (t *Tool) handleProfiles(
 			Description: cfg.Description,
 			Default:     name == t.defaultProfile,
 			Driver:      driverType,
-			Supported:   supportedActionsForDriver(driverType),
+			Supported:   visibleActionsForDriver(driverType, t.evaluateEnabled),
 		}
 		drv := t.statusDriver(name, cfg)
 		if drv != nil {

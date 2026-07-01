@@ -2558,6 +2558,11 @@ func TestNewAgent_SandboxOpenClawToolingGuidanceMatchesTools(t *testing.T) {
 		content,
 		"does not automatically mount host paths",
 	)
+	require.Contains(
+		t,
+		content,
+		"Do not use host system package managers",
+	)
 	require.NotContains(
 		t,
 		content,
@@ -2731,6 +2736,46 @@ func TestOpenClawToolingGuidanceKeepsSecretBanAbsolute(t *testing.T) {
 		t,
 		openClawToolingGuidance,
 		"secrets, or large transcripts in memory files unless",
+	)
+}
+
+func TestOpenClawToolingGuidanceAvoidsLocalBrowserMedia(t *testing.T) {
+	t.Parallel()
+
+	require.Contains(
+		t,
+		openClawToolingGuidance,
+		"Do not open local files through browser",
+	)
+	require.Contains(
+		t,
+		openClawToolingGuidance,
+		"normal browser policy blocks those paths",
+	)
+	require.Contains(
+		t,
+		browserToolingGuidance,
+		"Do not use browser to open local or generated files",
+	)
+	require.Contains(
+		t,
+		browserToolingGuidance,
+		"MEDIA or MEDIA_DIR",
+	)
+}
+
+func TestOpenClawToolingGuidanceAvoidsSystemPackageManagers(t *testing.T) {
+	t.Parallel()
+
+	require.Contains(
+		t,
+		openClawToolingGuidance,
+		"Do not use host system package managers",
+	)
+	require.Contains(
+		t,
+		openClawToolingGuidance,
+		"use preconfigured dependencies or ask for an explicit setup flow",
 	)
 }
 
@@ -4877,6 +4922,23 @@ func (t stubTool) Declaration() *tool.Declaration {
 	}
 }
 
+type stubCloseTool struct {
+	name     string
+	closeErr error
+	closed   *bool
+}
+
+func (t *stubCloseTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: t.name}
+}
+
+func (t *stubCloseTool) Close() error {
+	if t.closed != nil {
+		*t.closed = true
+	}
+	return t.closeErr
+}
+
 type nilDeclTool struct{}
 
 func (t nilDeclTool) Declaration() *tool.Declaration {
@@ -5031,6 +5093,22 @@ func TestCloseToolSets_CloseErrorDoesNotPanic(t *testing.T) {
 	require.True(t, toolSetClosed)
 }
 
+func TestCloseTools_CloseErrorDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	toolClosed := false
+	closeTools([]tool.Tool{
+		nil,
+		&stubCloseTool{
+			name:     "stub",
+			closeErr: errors.New("boom"),
+			closed:   &toolClosed,
+		},
+		stubTool{name: "plain"},
+	})
+	require.True(t, toolClosed)
+}
+
 func TestRuntime_Close_ReturnsRunnerCloseError(t *testing.T) {
 	t.Parallel()
 
@@ -5046,6 +5124,23 @@ func TestRuntime_Close_ReturnsRunnerCloseError(t *testing.T) {
 
 	require.ErrorIs(t, rt.Close(), closeErr)
 	require.True(t, runnerClosed)
+}
+
+func TestRuntime_Close_ClosesTools(t *testing.T) {
+	t.Parallel()
+
+	toolClosed := false
+	rt := &Runtime{
+		tools: []tool.Tool{
+			&stubCloseTool{
+				name:   "browser",
+				closed: &toolClosed,
+			},
+		},
+	}
+
+	require.NoError(t, rt.Close())
+	require.True(t, toolClosed)
 }
 
 func TestRuntime_Close_ClosesEvolutionService(t *testing.T) {
