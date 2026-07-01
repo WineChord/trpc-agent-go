@@ -4098,6 +4098,10 @@ func TestParseOpenAIVariant_Explicit(t *testing.T) {
 	v, err := parseOpenAIVariant(string(openai.VariantOpenAI), "")
 	require.NoError(t, err)
 	require.Equal(t, openai.VariantOpenAI, v)
+
+	v, err = parseOpenAIVariant(string(openai.VariantGLM), "")
+	require.NoError(t, err)
+	require.Equal(t, openai.VariantGLM, v)
 }
 
 func TestParseOpenAIVariant_Auto(t *testing.T) {

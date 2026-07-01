@@ -3866,7 +3866,8 @@ func parseOpenAIVariant(
 	case openai.VariantOpenAI,
 		openai.VariantDeepSeek,
 		openai.VariantHunyuan,
-		openai.VariantQwen:
+		openai.VariantQwen,
+		openai.VariantGLM:
 		return variant, nil
 	default:
 		return "", fmt.Errorf("unsupported openai variant: %s", raw)
