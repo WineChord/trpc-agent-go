@@ -117,6 +117,7 @@ type FunctionCallResponseProcessor struct {
 	toolCallbacks       *tool.Callbacks
 	toolRetryPolicy     *tool.RetryPolicy
 	postToolResultHooks []PostToolResultHook
+	attachmentBudget    int
 }
 
 // FunctionCallResponseProcessorOption configures a function-call response processor.
@@ -149,6 +150,17 @@ func WithPostToolResultHook(
 			return
 		}
 		p.postToolResultHooks = append(p.postToolResultHooks, hook)
+	}
+}
+
+// WithToolResultAttachmentBudget limits callback-managed attachments across
+// one tool response processing pass. Non-positive values preserve the legacy
+// unlimited behavior.
+func WithToolResultAttachmentBudget(
+	maxAttachments int,
+) FunctionCallResponseProcessorOption {
+	return func(p *FunctionCallResponseProcessor) {
+		p.attachmentBudget = maxAttachments
 	}
 }
 
@@ -396,6 +408,12 @@ func (p *FunctionCallResponseProcessor) handleFunctionCallsWithRequest(
 	tools map[string]tool.Tool,
 	eventChan chan<- *event.Event,
 ) (*event.Event, error) {
+	if p.attachmentBudget > 0 {
+		ctx = tool.EnsureToolResultAttachmentBudget(
+			ctx,
+			p.attachmentBudget,
+		)
+	}
 	toolCalls := llmResponse.Choices[0].Message.ToolCalls
 
 	// If parallel tools are enabled AND multiple tool calls, execute concurrently

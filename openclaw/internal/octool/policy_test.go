@@ -205,3 +205,56 @@ func TestChatCommandSafetyPolicy_BlocksEnvFileParentWorkdir(
 	})
 	require.ErrorContains(t, err, reasonSensitivePath)
 }
+
+func TestChatCommandSafetyPolicy_BlocksSystemPackageInstallFallback(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	err := NewChatCommandSafetyPolicy()(context.Background(), CommandRequest{
+		Command: `yum install -y stockfish 2>/dev/null || ` +
+			`dnf install -y stockfish 2>/dev/null || ` +
+			`microdnf install -y stockfish`,
+	})
+	require.ErrorContains(t, err, reasonSystemPackageInstall)
+}
+
+func TestChatCommandSafetyPolicy_BlocksSudoAptPackageInstall(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	err := NewChatCommandSafetyPolicy()(context.Background(), CommandRequest{
+		Command: `sudo apt-get -y install tesseract-ocr`,
+	})
+	require.ErrorContains(t, err, reasonSystemPackageInstall)
+}
+
+func TestChatCommandSafetyPolicy_BlocksShellWrappedPackageInstall(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	err := NewChatCommandSafetyPolicy()(context.Background(), CommandRequest{
+		Command: `bash -lc 'apk add --no-cache chromium'`,
+	})
+	require.ErrorContains(t, err, reasonSystemPackageInstall)
+}
+
+func TestChatCommandSafetyPolicy_AllowsLanguagePackageInstall(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	policy := NewChatCommandSafetyPolicy()
+	for _, command := range []string{
+		`pip install python-chess`,
+		`python -m pip install python-chess`,
+		`go install golang.org/x/tools/gopls@latest`,
+	} {
+		err := policy(context.Background(), CommandRequest{
+			Command: command,
+		})
+		require.NoError(t, err)
+	}
+}
