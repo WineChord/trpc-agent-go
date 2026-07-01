@@ -1061,6 +1061,29 @@ func TestManager_MaxLinesTrimsOutput(t *testing.T) {
 	require.Equal(t, "c", strings.TrimSpace(log.Output))
 }
 
+func TestManager_MaxResultOutputCharsTruncatesForeground(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is not available")
+	}
+
+	mgr := NewManager(WithMaxResultOutputChars(80))
+	execTool := newExecCommandTool(mgr)
+
+	args := mustJSON(t, map[string]any{
+		"command":       "printf 'abcdefghijklmnopqrstuvwxyz%.0s' {1..8}",
+		"yield_time_ms": 0,
+	})
+	out, err := execTool.Call(context.Background(), args)
+	require.NoError(t, err)
+
+	res := out.(execResult)
+	require.Equal(t, "exited", res.Status)
+	require.Contains(t, res.Output, "abcdefghijklmnopqrstuvwxyz")
+	require.NotContains(t, res.Output, "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz")
+	require.Contains(t, res.Output, "OpenClaw truncated command output")
+	require.Contains(t, res.Output, "Write large outputs to a file")
+}
+
 func TestProcessTool_ListKillClearRemove(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash is not available")

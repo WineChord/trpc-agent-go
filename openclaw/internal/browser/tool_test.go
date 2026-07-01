@@ -584,6 +584,8 @@ func TestToolCall_UsesBrowserServerDriverForHostTarget(t *testing.T) {
 		driverTypeBrowserServer,
 		result.Profiles[0].Driver,
 	)
+	require.NotContains(t, result.Supported, actionEvaluate)
+	require.NotContains(t, result.Profiles[0].Supported, actionEvaluate)
 }
 
 func TestToolCall_StatusActionUsesHandleStatus(t *testing.T) {
@@ -764,15 +766,64 @@ func TestNewTool_DeclarationExposesSchema(t *testing.T) {
 	decl := tool.Declaration()
 	require.Equal(t, ToolName, decl.Name)
 	require.Contains(t, decl.Description, "current browser tab")
+	require.Contains(t, decl.Description, "not for direct inspection")
+	require.Contains(t, decl.Description, "file://, data:, or ad hoc localhost")
+	require.Contains(t, decl.Description, "MEDIA or MEDIA_DIR")
+	require.Contains(t, decl.Description, "evaluate action is disabled")
+	require.NotContains(t, decl.Description, "Use evaluate only")
 	require.Contains(t, decl.Description, "Omit target")
 	require.NotNil(t, decl.InputSchema)
 	require.Equal(t, "object", decl.InputSchema.Type)
 	require.Contains(t, decl.InputSchema.Properties, "action")
+	require.Contains(
+		t,
+		decl.InputSchema.Properties["action"].Description,
+		"Supported actions include",
+	)
+	require.Contains(
+		t,
+		decl.InputSchema.Properties["action"].Description,
+		"evaluate is not available",
+	)
+	require.NotContains(
+		t,
+		decl.InputSchema.Properties["action"].Description,
+		"act, evaluate",
+	)
 	require.Contains(t, decl.InputSchema.Properties, "request")
 	require.Contains(
 		t,
 		decl.InputSchema.Properties["target"].Description,
 		"only use sandbox or node when configured",
+	)
+}
+
+func TestNewTool_DeclarationReflectsEvaluateEnabled(t *testing.T) {
+	t.Parallel()
+
+	evaluateEnabled := true
+	tool, err := NewTool(Config{
+		EvaluateEnabled: &evaluateEnabled,
+		Profiles: []ProfileConfig{{
+			Name:      defaultProfileName,
+			Transport: transportStdio,
+			Command:   "npx",
+		}},
+	})
+	require.NoError(t, err)
+
+	decl := tool.Declaration()
+	require.Contains(t, decl.Description, "Use evaluate only")
+	require.NotContains(t, decl.Description, "evaluate action is disabled")
+	require.Contains(
+		t,
+		decl.InputSchema.Properties["action"].Description,
+		"act, evaluate",
+	)
+	require.NotContains(
+		t,
+		decl.InputSchema.Properties["action"].Description,
+		"evaluate is not available",
 	)
 }
 

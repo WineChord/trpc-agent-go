@@ -43,12 +43,13 @@ type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 
-	maxLines int
-	jobTTL   time.Duration
-	timeout  time.Duration
-	baseEnv  map[string]string
-	policy   CommandPolicy
-	redactor OutputRedactor
+	maxLines             int
+	jobTTL               time.Duration
+	timeout              time.Duration
+	baseEnv              map[string]string
+	policy               CommandPolicy
+	redactor             OutputRedactor
+	maxResultOutputChars int
 
 	clock func() time.Time
 
@@ -99,6 +100,16 @@ func WithCommandPolicy(policy CommandPolicy) Option {
 func WithOutputRedactor(redactor OutputRedactor) Option {
 	return func(m *Manager) {
 		m.redactor = redactor
+	}
+}
+
+// WithMaxResultOutputChars limits one-shot command output returned to the
+// model. Non-positive values preserve the legacy unlimited behavior.
+func WithMaxResultOutputChars(n int) Option {
+	return func(m *Manager) {
+		if n > 0 {
+			m.maxResultOutputChars = n
+		}
 	}
 }
 
@@ -186,6 +197,7 @@ func (m *Manager) Exec(
 			return execResult{}, err
 		}
 		out = applyOutputRedactor(redact, out)
+		out = m.limitResultOutput(out)
 		return execResult{
 			Status:   "exited",
 			Output:   out,
@@ -215,6 +227,7 @@ func (m *Manager) Exec(
 		}
 		out, code := sess.allOutput()
 		_ = m.clearFinished(sess.id)
+		out = m.limitResultOutput(out)
 		return execResult{
 			Status:   "exited",
 			Output:   out,
@@ -233,6 +246,7 @@ func (m *Manager) Exec(
 	case <-sess.doneCh:
 		out, code := sess.allOutput()
 		_ = m.clearFinished(sess.id)
+		out = m.limitResultOutput(out)
 		return execResult{
 			Status:   "exited",
 			Output:   out,
@@ -495,6 +509,26 @@ func applyOutputRedactor(
 		return output
 	}
 	return redact(output)
+}
+
+func (m *Manager) limitResultOutput(output string) string {
+	if m == nil || m.maxResultOutputChars <= 0 {
+		return output
+	}
+	return truncateResultOutput(output, m.maxResultOutputChars)
+}
+
+func truncateResultOutput(output string, maxChars int) string {
+	if maxChars <= 0 || len(output) <= maxChars {
+		return output
+	}
+	return output[:maxChars] + fmt.Sprintf(
+		"\n\n[OpenClaw truncated command output to %d of %d bytes. "+
+			"Write large outputs to a file and read only the needed "+
+			"chunks with file tools or shell commands.]",
+		maxChars,
+		len(output),
+	)
 }
 
 func currentProcessEnvMap() map[string]string {

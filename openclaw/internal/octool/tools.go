@@ -279,6 +279,9 @@ func execToolDescription(hasMemoryFile bool) string {
 			"message must call exec_command or the required tool.",
 		"Protected shell and credential paths may be blocked by policy.",
 		"Sensitive env values may be redacted from returned output.",
+		"Large stdout/stderr may be truncated before it is returned " +
+			"to the model; write large outputs to files and read only " +
+			"the needed chunks.",
 		"Do not use this just to inspect a PDF or spreadsheet already " +
 			"in chat; prefer read_document or read_spreadsheet for that.",
 	}
