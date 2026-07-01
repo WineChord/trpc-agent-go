@@ -270,7 +270,10 @@ const (
 		"Do not call exec_command just to print OPENCLAW_* upload " +
 		"vars or inspect recent upload metadata when a matching " +
 		"chat file is already available. For other general local " +
-		"shell work, use exec_command. For interactive follow-up " +
+		"shell work, use exec_command. Do not use host system package " +
+		"managers such as apt, yum, dnf, apk, pacman, zypper, or brew " +
+		"from chat; use preconfigured dependencies or ask for an " +
+		"explicit setup flow. For interactive follow-up " +
 		"input, use " +
 		"write_stdin and kill_session when needed. Use message " +
 		"to send to the current chat or an explicit target. " +
@@ -340,7 +343,10 @@ const (
 		"absolute image paths on their own lines. OpenClaw can " +
 		"reattach those generated images to the model for direct " +
 		"visual inspection, so inspect the image before assuming " +
-		"OCR failed. If you intentionally " +
+		"OCR failed. Do not open local files through browser " +
+		"`file://` URLs or ad hoc localhost/127.0.0.1 servers; " +
+		"normal browser policy blocks those paths and wastes " +
+		"tool calls. If you intentionally " +
 		"use that directive path, keep the visible prose separate " +
 		"from the `MEDIA:` lines. If a compatible audio reply " +
 		"should arrive as a Telegram voice bubble instead of a " +
@@ -416,7 +422,12 @@ const (
 		"verification matters, and keep using the same targetId " +
 		"after tabs or snapshot calls. When the user mentions " +
 		"their current browser tab, relay, or extension attach " +
-		"flow, use profile=\"chrome\" when that profile exists."
+		"flow, use profile=\"chrome\" when that profile exists. " +
+		"Do not use browser to open local or generated files " +
+		"through file://, data:, or ad hoc localhost/127.0.0.1 " +
+		"URLs unless the runtime explicitly exposes that server; " +
+		"use file/document/exec tools and MEDIA or MEDIA_DIR " +
+		"outputs for local media inspection."
 
 	agentTypeLLM        = "llm"
 	agentTypeClaudeCode = "claude-code"
@@ -424,6 +435,8 @@ const (
 	openAIVariantAuto = "auto"
 
 	defaultOpenAIVariant = openAIVariantAuto
+
+	defaultExecResultOutputChars = 20_000
 
 	deepSeekAPIHost = "api.deepseek.com"
 	qwenAPIHost     = "dashscope.aliyuncs.com"
@@ -708,6 +721,7 @@ type Runtime struct {
 	cronSvc           closeFunc
 	subagentSvc       closeFunc
 	skillsWatch       closeFunc
+	tools             []tool.Tool
 	evolutionService  evolution.Service
 	toolSets          []tool.ToolSet
 	telemetryShutdown func(context.Context) error
@@ -1084,11 +1098,12 @@ func NewRuntimeWithOptions(
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
-		toolSets    []tool.ToolSet
-		ag          agent.Agent
-		skillsRepo  *ocskills.Repository
-		skillsProv  skill.RepositoryProvider
-		skillsWatch *ocskills.WatchService
+		toolSets     []tool.ToolSet
+		runtimeTools []tool.Tool
+		ag           agent.Agent
+		skillsRepo   *ocskills.Repository
+		skillsProv   skill.RepositoryProvider
+		skillsWatch  *ocskills.WatchService
 	)
 	if agentType == agentTypeClaudeCode {
 		ag, err = newClaudeCodeAgent(opts)
@@ -1175,6 +1190,9 @@ func NewRuntimeWithOptions(
 		cwd, _ := os.Getwd()
 		skillsProv = newScopedSkillRepositoryProvider(cwd, agentCfg)
 		agentCfg.SkillRepositoryProvider = skillsProv
+		agentCfg.ownedToolsSink = func(tools []tool.Tool) {
+			runtimeTools = tools
+		}
 		ag, skillsRepo, err = newAgent(
 			mdl,
 			agentCfg,
@@ -1190,6 +1208,7 @@ func NewRuntimeWithOptions(
 		}
 	}
 	if err != nil {
+		closeTools(runtimeTools)
 		closeToolSets(toolSets)
 		return nil, &exitError{
 			Code: 1,
@@ -1202,6 +1221,7 @@ func NewRuntimeWithOptions(
 		prompts.SystemPrompt,
 	)
 	rt.toolSets = toolSets
+	rt.tools = runtimeTools
 	rt.skillsWatch = skillsWatch
 
 	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
@@ -1491,6 +1511,7 @@ func (r *Runtime) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	closeTools(r.tools)
 	closeToolSets(r.toolSets)
 	closeMemoryService(r.memorySvc)
 	closeSessionService(r.sessionSvc)
@@ -1688,13 +1709,15 @@ func run(
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
-		toolSets    []tool.ToolSet
-		ag          agent.Agent
-		skillsRepo  *ocskills.Repository
-		skillsProv  skill.RepositoryProvider
-		skillsWatch *ocskills.WatchService
+		toolSets     []tool.ToolSet
+		runtimeTools []tool.Tool
+		ag           agent.Agent
+		skillsRepo   *ocskills.Repository
+		skillsProv   skill.RepositoryProvider
+		skillsWatch  *ocskills.WatchService
 	)
 	defer func() {
+		closeTools(runtimeTools)
 		closeToolSets(toolSets)
 	}()
 	defer func() {
@@ -1789,6 +1812,9 @@ func run(
 		cwd, _ := os.Getwd()
 		skillsProv = newScopedSkillRepositoryProvider(cwd, agentCfg)
 		agentCfg.SkillRepositoryProvider = skillsProv
+		agentCfg.ownedToolsSink = func(tools []tool.Tool) {
+			runtimeTools = tools
+		}
 		ag, skillsRepo, err = newAgent(
 			mdl,
 			agentCfg,
@@ -2226,6 +2252,24 @@ func closeMemoryService(svc closeFunc) {
 	}
 	if err := svc.Close(); err != nil {
 		log.Warnf("close memory service failed: %v", err)
+	}
+}
+
+func closeTools(tools []tool.Tool) {
+	for _, tl := range tools {
+		closer, ok := tl.(closeFunc)
+		if !ok || closer == nil {
+			continue
+		}
+		name := "unknown"
+		if decl := tl.Declaration(); decl != nil {
+			if toolName := strings.TrimSpace(decl.Name); toolName != "" {
+				name = toolName
+			}
+		}
+		if err := closer.Close(); err != nil {
+			log.Warnf("close tool %q failed: %v", name, err)
+		}
 	}
 }
 
@@ -2714,6 +2758,9 @@ func newAgent(
 		}
 		tools = append(tools, extra...)
 	}
+	if cfg.ownedToolsSink != nil {
+		cfg.ownedToolsSink(append([]tool.Tool(nil), tools...))
+	}
 
 	deferToolSurface, directTools, err := resolveDeferredToolSurface(
 		cfg,
@@ -2988,13 +3035,19 @@ func buildOpenClawToolingGuidance(cfg agentConfig) string {
 	}
 	guidance = strings.Replace(
 		guidance,
-		"For other general local shell work, use exec_command. For interactive follow-up "+
-			"input, use write_stdin and kill_session when needed. Use message "+
+		"For other general local shell work, use exec_command. "+
+			"Do not use host system package managers such as apt, yum, dnf, "+
+			"apk, pacman, zypper, or brew from chat; use preconfigured "+
+			"dependencies or ask for an explicit setup flow. For interactive "+
+			"follow-up input, use write_stdin and kill_session when needed. Use message "+
 			"to send to the current chat or an explicit target. ",
 		"For other general local shell work, use exec_command. In sandbox mode, "+
 			"exec_command only supports foreground non-interactive commands; "+
 			"write_stdin, kill_session, background execution, TTY allocation, "+
-			"and session continuation are unavailable. Use message to send to "+
+			"and session continuation are unavailable. Do not use host system "+
+			"package managers such as apt, yum, dnf, apk, pacman, zypper, "+
+			"or brew from chat; use preconfigured dependencies or ask for an "+
+			"explicit setup flow. Use message to send to "+
 			"the current chat or an explicit target. ",
 		1,
 	)
@@ -3092,6 +3145,7 @@ func toolsFromProviders(
 			Config: spec.Config,
 		})
 		if err != nil {
+			closeTools(out)
 			return nil, fmt.Errorf(
 				"tool provider %s failed: %w",
 				typeName,
@@ -3260,6 +3314,8 @@ type agentConfig struct {
 
 	ToolSets []pluginSpec
 
+	ownedToolsSink func([]tool.Tool)
+
 	RefreshToolSetsOnRun               bool
 	DeferToolSurface                   bool
 	DeferToolSurfaceMode               string
@@ -3375,6 +3431,9 @@ func buildOpenClawTools(
 			octool.WithBaseEnv(deps.ToolEnv(stateDir)),
 			octool.WithCommandPolicy(commandPolicy),
 			octool.WithOutputRedactor(outputRedactor),
+			octool.WithMaxResultOutputChars(
+				defaultExecResultOutputChars,
+			),
 		}
 		if hostExecDefaultTimeout > 0 {
 			mgrOpts = append(
