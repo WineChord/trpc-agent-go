@@ -1911,6 +1911,234 @@ func TestExecuteToolCall_ToolResultMessagesCallback_Nil_NoOverride(t *testing.T)
 	assert.Equal(t, string(wantBytes), choices[0].Message.Content)
 }
 
+func TestProcessResponse_ToolResultMessagesNoAttachmentBudgetByDefault(
+	t *testing.T,
+) {
+	ctx := context.Background()
+
+	tools := map[string]tool.Tool{
+		"first": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "first"},
+			callFn: func(_ context.Context, _ []byte) (any, error) {
+				return map[string]any{"ok": true}, nil
+			},
+		},
+		"second": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "second"},
+			callFn: func(_ context.Context, _ []byte) (any, error) {
+				return map[string]any{"ok": true}, nil
+			},
+		},
+	}
+
+	var grants []int
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterToolResultMessages(func(
+		ctx context.Context,
+		_ *tool.ToolResultMessagesInput,
+	) (any, error) {
+		grants = append(
+			grants,
+			tool.ReserveToolResultAttachments(ctx, 4),
+		)
+		return nil, nil
+	})
+
+	p := NewFunctionCallResponseProcessor(false, callbacks)
+	inv := &agent.Invocation{
+		InvocationID: "inv-1",
+		AgentName:    "echo-agent",
+	}
+	req := &model.Request{Tools: tools}
+	rsp := &model.Response{
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Role: model.RoleAssistant,
+				ToolCalls: []model.ToolCall{
+					{
+						ID: "call-1",
+						Function: model.FunctionDefinitionParam{
+							Name:      "first",
+							Arguments: []byte(`{}`),
+						},
+					},
+					{
+						ID: "call-2",
+						Function: model.FunctionDefinitionParam{
+							Name:      "second",
+							Arguments: []byte(`{}`),
+						},
+					},
+				},
+			},
+		}},
+	}
+	ch := make(chan *event.Event, 1)
+
+	p.ProcessResponse(ctx, inv, req, rsp, ch)
+
+	require.Equal(t, []int{4, 4}, grants)
+	select {
+	case <-ch:
+	default:
+		t.Fatal("expected merged tool response event")
+	}
+}
+
+func TestProcessResponse_ToolResultMessagesShareAttachmentBudget(
+	t *testing.T,
+) {
+	ctx := context.Background()
+
+	tools := map[string]tool.Tool{
+		"first": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "first"},
+			callFn: func(_ context.Context, _ []byte) (any, error) {
+				return map[string]any{"ok": true}, nil
+			},
+		},
+		"second": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "second"},
+			callFn: func(_ context.Context, _ []byte) (any, error) {
+				return map[string]any{"ok": true}, nil
+			},
+		},
+	}
+
+	var grants []int
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterToolResultMessages(func(
+		ctx context.Context,
+		_ *tool.ToolResultMessagesInput,
+	) (any, error) {
+		grants = append(
+			grants,
+			tool.ReserveToolResultAttachments(ctx, 4),
+		)
+		return nil, nil
+	})
+
+	p := NewFunctionCallResponseProcessor(
+		false,
+		callbacks,
+		WithToolResultAttachmentBudget(6),
+	)
+	inv := &agent.Invocation{
+		InvocationID: "inv-1",
+		AgentName:    "echo-agent",
+	}
+	req := &model.Request{Tools: tools}
+	rsp := &model.Response{
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Role: model.RoleAssistant,
+				ToolCalls: []model.ToolCall{
+					{
+						ID: "call-1",
+						Function: model.FunctionDefinitionParam{
+							Name:      "first",
+							Arguments: []byte(`{}`),
+						},
+					},
+					{
+						ID: "call-2",
+						Function: model.FunctionDefinitionParam{
+							Name:      "second",
+							Arguments: []byte(`{}`),
+						},
+					},
+				},
+			},
+		}},
+	}
+	ch := make(chan *event.Event, 1)
+
+	p.ProcessResponse(ctx, inv, req, rsp, ch)
+
+	require.Equal(t, []int{4, 2}, grants)
+	select {
+	case <-ch:
+	default:
+		t.Fatal("expected merged tool response event")
+	}
+}
+
+func TestProcessResponse_ParallelToolResultMessagesShareAttachmentBudget(
+	t *testing.T,
+) {
+	ctx := context.Background()
+
+	tools := map[string]tool.Tool{
+		"first": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "first"},
+			callFn: func(_ context.Context, _ []byte) (any, error) {
+				return map[string]any{"ok": true}, nil
+			},
+		},
+		"second": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "second"},
+			callFn: func(_ context.Context, _ []byte) (any, error) {
+				return map[string]any{"ok": true}, nil
+			},
+		},
+	}
+
+	var total atomic.Int64
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterToolResultMessages(func(
+		ctx context.Context,
+		_ *tool.ToolResultMessagesInput,
+	) (any, error) {
+		granted := tool.ReserveToolResultAttachments(ctx, 4)
+		total.Add(int64(granted))
+		return nil, nil
+	})
+
+	p := NewFunctionCallResponseProcessor(
+		true,
+		callbacks,
+		WithToolResultAttachmentBudget(6),
+	)
+	inv := &agent.Invocation{
+		InvocationID: "inv-1",
+		AgentName:    "echo-agent",
+	}
+	req := &model.Request{Tools: tools}
+	rsp := &model.Response{
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Role: model.RoleAssistant,
+				ToolCalls: []model.ToolCall{
+					{
+						ID: "call-1",
+						Function: model.FunctionDefinitionParam{
+							Name:      "first",
+							Arguments: []byte(`{}`),
+						},
+					},
+					{
+						ID: "call-2",
+						Function: model.FunctionDefinitionParam{
+							Name:      "second",
+							Arguments: []byte(`{}`),
+						},
+					},
+				},
+			},
+		}},
+	}
+	ch := make(chan *event.Event, 1)
+
+	p.ProcessResponse(ctx, inv, req, rsp, ch)
+
+	require.Equal(t, int64(6), total.Load())
+	select {
+	case <-ch:
+	default:
+		t.Fatal("expected merged tool response event")
+	}
+}
+
 func TestExecuteToolCall_ToolResultMessagesCallback_OverrideWithSingleMessage(t *testing.T) {
 	ctx := context.Background()
 

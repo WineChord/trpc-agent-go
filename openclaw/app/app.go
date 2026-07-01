@@ -270,7 +270,10 @@ const (
 		"Do not call exec_command just to print OPENCLAW_* upload " +
 		"vars or inspect recent upload metadata when a matching " +
 		"chat file is already available. For other general local " +
-		"shell work, use exec_command. For interactive follow-up " +
+		"shell work, use exec_command. Do not use host system package " +
+		"managers such as apt, yum, dnf, apk, pacman, zypper, or brew " +
+		"from chat; use preconfigured dependencies or ask for an " +
+		"explicit setup flow. For interactive follow-up " +
 		"input, use " +
 		"write_stdin and kill_session when needed. Use message " +
 		"to send to the current chat or an explicit target. " +
@@ -340,7 +343,10 @@ const (
 		"absolute image paths on their own lines. OpenClaw can " +
 		"reattach those generated images to the model for direct " +
 		"visual inspection, so inspect the image before assuming " +
-		"OCR failed. If you intentionally " +
+		"OCR failed. Do not open local files through browser " +
+		"`file://` URLs or ad hoc localhost/127.0.0.1 servers; " +
+		"normal browser policy blocks those paths and wastes " +
+		"tool calls. If you intentionally " +
 		"use that directive path, keep the visible prose separate " +
 		"from the `MEDIA:` lines. If a compatible audio reply " +
 		"should arrive as a Telegram voice bubble instead of a " +
@@ -416,7 +422,12 @@ const (
 		"verification matters, and keep using the same targetId " +
 		"after tabs or snapshot calls. When the user mentions " +
 		"their current browser tab, relay, or extension attach " +
-		"flow, use profile=\"chrome\" when that profile exists."
+		"flow, use profile=\"chrome\" when that profile exists. " +
+		"Do not use browser to open local or generated files " +
+		"through file://, data:, or ad hoc localhost/127.0.0.1 " +
+		"URLs unless the runtime explicitly exposes that server; " +
+		"use file/document/exec tools and MEDIA or MEDIA_DIR " +
+		"outputs for local media inspection."
 
 	agentTypeLLM        = "llm"
 	agentTypeClaudeCode = "claude-code"
@@ -424,6 +435,8 @@ const (
 	openAIVariantAuto = "auto"
 
 	defaultOpenAIVariant = openAIVariantAuto
+
+	defaultExecResultOutputChars = 20_000
 
 	deepSeekAPIHost = "api.deepseek.com"
 	qwenAPIHost     = "dashscope.aliyuncs.com"
@@ -2988,13 +3001,19 @@ func buildOpenClawToolingGuidance(cfg agentConfig) string {
 	}
 	guidance = strings.Replace(
 		guidance,
-		"For other general local shell work, use exec_command. For interactive follow-up "+
-			"input, use write_stdin and kill_session when needed. Use message "+
+		"For other general local shell work, use exec_command. "+
+			"Do not use host system package managers such as apt, yum, dnf, "+
+			"apk, pacman, zypper, or brew from chat; use preconfigured "+
+			"dependencies or ask for an explicit setup flow. For interactive "+
+			"follow-up input, use write_stdin and kill_session when needed. Use message "+
 			"to send to the current chat or an explicit target. ",
 		"For other general local shell work, use exec_command. In sandbox mode, "+
 			"exec_command only supports foreground non-interactive commands; "+
 			"write_stdin, kill_session, background execution, TTY allocation, "+
-			"and session continuation are unavailable. Use message to send to "+
+			"and session continuation are unavailable. Do not use host system "+
+			"package managers such as apt, yum, dnf, apk, pacman, zypper, "+
+			"or brew from chat; use preconfigured dependencies or ask for an "+
+			"explicit setup flow. Use message to send to "+
 			"the current chat or an explicit target. ",
 		1,
 	)
@@ -3375,6 +3394,9 @@ func buildOpenClawTools(
 			octool.WithBaseEnv(deps.ToolEnv(stateDir)),
 			octool.WithCommandPolicy(commandPolicy),
 			octool.WithOutputRedactor(outputRedactor),
+			octool.WithMaxResultOutputChars(
+				defaultExecResultOutputChars,
+			),
 		}
 		if hostExecDefaultTimeout > 0 {
 			mgrOpts = append(
