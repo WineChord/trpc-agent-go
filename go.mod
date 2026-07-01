@@ -38,7 +38,7 @@ require (
 	google.golang.org/protobuf v1.34.2
 	gopkg.in/yaml.v3 v3.0.1
 	trpc.group/trpc-go/trpc-a2a-go v0.2.5
-	trpc.group/trpc-go/trpc-mcp-go v0.0.10
+	trpc.group/trpc-go/trpc-mcp-go v0.0.17-0.20260701200146-aa8caab8dfff
 )
 
 require (

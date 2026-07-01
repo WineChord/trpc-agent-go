@@ -419,5 +419,5 @@ trpc.group/trpc-go/trpc-a2a-go v0.2.5 h1:X3pAlWD128LaS9TtXsUDZoJWPVuPZDkZKUecKRx
 trpc.group/trpc-go/trpc-a2a-go v0.2.5/go.mod h1:Gtytau9Uoc3oPo/dpHvKit+tQn9Qlk5XFG1RiZTGqfk=
 trpc.group/trpc-go/trpc-agent-go/storage/elasticsearch v0.2.0 h1:TJkM9rYp3GFcyvGWY1lW+g+ABuWzHlvpBbXd0U6iKK0=
 trpc.group/trpc-go/trpc-agent-go/storage/elasticsearch v0.2.0/go.mod h1:efPOimKMIx1BmLZ9qkpwoZyiSQ62yM/6eMzWocLD7Y0=
-trpc.group/trpc-go/trpc-mcp-go v0.0.10 h1:kKPfevmikMojfOgtUBf5SJQ/v6aDugckodgyH1uDu2Q=
-trpc.group/trpc-go/trpc-mcp-go v0.0.10/go.mod h1:OT6rLglkdaQ17D2T1Y87Y/ckItzdsEldDbw7dHAbGEA=
+trpc.group/trpc-go/trpc-mcp-go v0.0.17-0.20260701200146-aa8caab8dfff h1:DDsRcxL61xUBOrhmtG4q/gTvaCYw+3SRb02VErwi23o=
+trpc.group/trpc-go/trpc-mcp-go v0.0.17-0.20260701200146-aa8caab8dfff/go.mod h1:OT6rLglkdaQ17D2T1Y87Y/ckItzdsEldDbw7dHAbGEA=

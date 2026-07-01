@@ -74,7 +74,7 @@ require (
 	trpc.group/trpc-go/trpc-agent-go/tool/openapi v1.8.0
 	trpc.group/trpc-go/trpc-agent-go/tool/webfetch/httpfetch v1.8.0
 	trpc.group/trpc-go/trpc-agent-go/tool/wikipedia v1.8.0
-	trpc.group/trpc-go/trpc-mcp-go v0.0.10
+	trpc.group/trpc-go/trpc-mcp-go v0.0.17-0.20260701200146-aa8caab8dfff
 )
 
 require (
