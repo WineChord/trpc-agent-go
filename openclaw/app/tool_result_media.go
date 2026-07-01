@@ -82,6 +82,13 @@ func toolResultImageMessages(
 	if len(images) == 0 {
 		return nil, nil
 	}
+	allowed := tool.ReserveToolResultAttachments(ctx, len(images))
+	if allowed <= 0 {
+		return nil, nil
+	}
+	if allowed < len(images) {
+		images = images[:allowed]
+	}
 
 	recordToolResultImages(ctx, in.ToolName, images)
 

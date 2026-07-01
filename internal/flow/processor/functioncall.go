@@ -49,6 +49,8 @@ const (
 	ErrorMarshalResult = "Error: failed to marshal result"
 )
 
+const defaultToolResultAttachmentBudget = 6
+
 // funcRespCompletionTimeout is the default wait duration for ensuring a
 // tool.response event has been processed by the session persistence layer.
 const funcRespCompletionTimeout = 5 * time.Second
@@ -396,6 +398,10 @@ func (p *FunctionCallResponseProcessor) handleFunctionCallsWithRequest(
 	tools map[string]tool.Tool,
 	eventChan chan<- *event.Event,
 ) (*event.Event, error) {
+	ctx = tool.EnsureToolResultAttachmentBudget(
+		ctx,
+		defaultToolResultAttachmentBudget,
+	)
 	toolCalls := llmResponse.Choices[0].Message.ToolCalls
 
 	// If parallel tools are enabled AND multiple tool calls, execute concurrently

@@ -584,6 +584,8 @@ func TestToolCall_UsesBrowserServerDriverForHostTarget(t *testing.T) {
 		driverTypeBrowserServer,
 		result.Profiles[0].Driver,
 	)
+	require.NotContains(t, result.Supported, actionEvaluate)
+	require.NotContains(t, result.Profiles[0].Supported, actionEvaluate)
 }
 
 func TestToolCall_StatusActionUsesHandleStatus(t *testing.T) {

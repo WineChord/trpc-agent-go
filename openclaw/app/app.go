@@ -340,7 +340,10 @@ const (
 		"absolute image paths on their own lines. OpenClaw can " +
 		"reattach those generated images to the model for direct " +
 		"visual inspection, so inspect the image before assuming " +
-		"OCR failed. If you intentionally " +
+		"OCR failed. Do not open local files through browser " +
+		"`file://` URLs or ad hoc localhost/127.0.0.1 servers; " +
+		"normal browser policy blocks those paths and wastes " +
+		"tool calls. If you intentionally " +
 		"use that directive path, keep the visible prose separate " +
 		"from the `MEDIA:` lines. If a compatible audio reply " +
 		"should arrive as a Telegram voice bubble instead of a " +

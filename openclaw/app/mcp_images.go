@@ -62,6 +62,13 @@ func mcpImageResultMessages(
 	if len(images) == 0 {
 		return nil, nil
 	}
+	allowed := tool.ReserveToolResultAttachments(ctx, len(images))
+	if allowed <= 0 {
+		return nil, nil
+	}
+	if allowed < len(images) {
+		images = images[:allowed]
+	}
 
 	userMsg := model.Message{
 		Role:    model.RoleUser,

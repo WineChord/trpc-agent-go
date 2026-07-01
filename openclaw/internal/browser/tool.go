@@ -148,6 +148,28 @@ func supportedActionsForDriver(driverType string) []string {
 	return append([]string(nil), supportedPlaywrightMCPActions...)
 }
 
+func visibleActionsForDriver(
+	driverType string,
+	evaluateEnabled bool,
+) []string {
+	actions := supportedActionsForDriver(driverType)
+	if evaluateEnabled {
+		return actions
+	}
+	return filterBrowserAction(actions, actionEvaluate)
+}
+
+func filterBrowserAction(actions []string, hidden string) []string {
+	out := actions[:0]
+	for _, action := range actions {
+		if action == hidden {
+			continue
+		}
+		out = append(out, action)
+	}
+	return out
+}
+
 type actRequest struct {
 	Kind        string           `json:"kind,omitempty"`
 	TargetID    string           `json:"targetId,omitempty"`
@@ -811,8 +833,9 @@ func (t *Tool) handleProfiles(
 		DefaultProfile:  t.defaultProfile,
 		Driver:          ToolName,
 		EvaluateEnabled: t.evaluateEnabled,
-		Supported: supportedActionsForDriver(
+		Supported: visibleActionsForDriver(
 			t.driverTypeForProfile(t.defaultProfile),
+			t.evaluateEnabled,
 		),
 		Profiles: make([]ProfileInfo, 0, len(t.profiles)),
 	}
@@ -825,7 +848,7 @@ func (t *Tool) handleProfiles(
 			Description: cfg.Description,
 			Default:     name == t.defaultProfile,
 			Driver:      driverType,
-			Supported:   supportedActionsForDriver(driverType),
+			Supported:   visibleActionsForDriver(driverType, t.evaluateEnabled),
 		}
 		drv := t.statusDriver(name, cfg)
 		if drv != nil {

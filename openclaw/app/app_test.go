@@ -2734,6 +2734,21 @@ func TestOpenClawToolingGuidanceKeepsSecretBanAbsolute(t *testing.T) {
 	)
 }
 
+func TestOpenClawToolingGuidanceAvoidsLocalBrowserMedia(t *testing.T) {
+	t.Parallel()
+
+	require.Contains(
+		t,
+		openClawToolingGuidance,
+		"Do not open local files through browser",
+	)
+	require.Contains(
+		t,
+		openClawToolingGuidance,
+		"normal browser policy blocks those paths",
+	)
+}
+
 func TestNewAgent_DefaultGenerationConfigStreams(t *testing.T) {
 	t.Parallel()
 
