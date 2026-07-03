@@ -215,6 +215,7 @@ func TestToolCall_BrowserBackendCrashGuardBlocksRepeatedCrashes(
 	got := raw.(Result)
 	require.Equal(t, stateDegraded, got.State)
 	require.Contains(t, got.Text, "Browser backend is degraded")
+	require.Contains(t, got.Text, "browser automation blocker")
 	require.Contains(t, got.Text, "web_fetch")
 	require.Len(t, drv.calls, browserCrashThreshold)
 }

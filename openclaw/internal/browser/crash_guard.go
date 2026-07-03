@@ -255,9 +255,10 @@ func browserCrashBlockedMessage(profile string, reason string) string {
 	return fmt.Sprintf(
 		"Browser backend is degraded for profile %q in this agent run "+
 			"after repeated backend crashes; last error: %s. "+
-			"Do not retry browser automation in this run unless the "+
-			"runtime configuration changes. Use web_fetch, search, exec, "+
-			"or document tools instead.",
+			"This is a browser automation blocker, not a page-specific "+
+			"navigation error. Do not retry browser automation in this "+
+			"run unless the runtime configuration changes. Use "+
+			"web_fetch, search, exec, or document tools instead.",
 		profile,
 		reason,
 	)
