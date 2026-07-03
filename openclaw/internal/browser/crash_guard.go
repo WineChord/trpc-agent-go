@@ -24,6 +24,8 @@ const (
 	stateDegraded             = "degraded"
 )
 
+var browserCrashGuardInitMu sync.Mutex
+
 type browserCrashGuard struct {
 	mu       sync.Mutex
 	profiles map[string]browserCrashState
@@ -189,6 +191,15 @@ func browserCrashGuardFromContext(
 	if !create {
 		return nil
 	}
+	browserCrashGuardInitMu.Lock()
+	defer browserCrashGuardInitMu.Unlock()
+	guard, ok = agent.GetStateValue[*browserCrashGuard](
+		inv,
+		browserCrashGuardStateKey,
+	)
+	if ok && guard != nil {
+		return guard
+	}
 	guard = &browserCrashGuard{
 		profiles: make(map[string]browserCrashState),
 	}
@@ -214,8 +225,10 @@ func detectBrowserBackendCrash(text string) (bool, string) {
 		strings.Contains(lower, "error:") ||
 		strings.Contains(lower, "browser logs") ||
 		strings.Contains(lower, "call log") ||
-		strings.Contains(lower, "async initializeserver") ||
-		strings.Contains(lower, "process did exit")
+		strings.Contains(lower, "async initializeserver")
+	hasProcessExitLog := strings.Contains(lower, "<process did exit") ||
+		(strings.Contains(lower, "[pid=") &&
+			strings.Contains(lower, "process did exit"))
 	switch {
 	case hasErrorContext &&
 		strings.Contains(lower, "target page, context or browser has been closed"):
@@ -226,10 +239,12 @@ func detectBrowserBackendCrash(text string) (bool, string) {
 		return true, "browser has disconnected"
 	case hasErrorContext && strings.Contains(lower, "browser is closed"):
 		return true, "browser is closed"
-	case strings.Contains(lower, "process did exit"):
+	case (hasErrorContext || hasProcessExitLog) &&
+		strings.Contains(lower, "process did exit"):
 		return true, "browser process exited"
-	case strings.Contains(lower, "signal=sigtrap") ||
-		strings.Contains(lower, "sigtrap"):
+	case (hasErrorContext || hasProcessExitLog) &&
+		(strings.Contains(lower, "signal=sigtrap") ||
+			strings.Contains(lower, "sigtrap")):
 		return true, "browser process exited with SIGTRAP"
 	case strings.Contains(lower, "connection closed") &&
 		strings.Contains(lower, "browser"):
