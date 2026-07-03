@@ -158,6 +158,162 @@ func TestToolCall_SnapshotWrapsUntrustedText(t *testing.T) {
 	require.Equal(t, mcpToolSnapshot, drv.calls[0].Tool)
 }
 
+func TestToolCall_BrowserBackendCrashGuardBlocksRepeatedCrashes(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	crashText := "### Error\nError: async initializeServer: " +
+		"Target page, context or browser has been closed\n" +
+		"[pid=123] <process did exit: signal=SIGTRAP>"
+	drv := &fakeDriver{
+		callResult: map[string]any{
+			mcpToolNavigate: []map[string]any{{
+				"type": "text",
+				"text": crashText,
+			}},
+		},
+	}
+	tool := newToolWithDrivers(
+		defaultProfileName,
+		false,
+		navigationPolicy{},
+		nil,
+		nil,
+		nil,
+		map[string]ProfileConfig{
+			defaultProfileName: {Name: defaultProfileName},
+		},
+		map[string]driver{
+			defaultProfileName: drv,
+		},
+	)
+	ctx := agent.NewInvocationContext(
+		context.Background(),
+		agent.NewInvocation(),
+	)
+
+	for i := 0; i < browserCrashThreshold; i++ {
+		raw, err := tool.Call(
+			ctx,
+			mustJSON(t, map[string]any{
+				"action": actionNavigate,
+				"url":    "https://example.com",
+			}),
+		)
+		require.NoError(t, err)
+		got := raw.(Result)
+		require.Contains(t, got.Text, "Target page")
+		require.NotEqual(t, stateDegraded, got.State)
+	}
+
+	raw, err := tool.Call(
+		ctx,
+		mustJSON(t, map[string]any{"action": actionSnapshot}),
+	)
+	require.NoError(t, err)
+	got := raw.(Result)
+	require.Equal(t, stateDegraded, got.State)
+	require.Contains(t, got.Text, "Browser backend is degraded")
+	require.Contains(t, got.Text, "web_fetch")
+	require.Len(t, drv.calls, browserCrashThreshold)
+}
+
+func TestToolCall_BrowserBackendCrashGuardIsInvocationScoped(t *testing.T) {
+	t.Parallel()
+
+	drv := &fakeDriver{
+		callResult: map[string]any{
+			mcpToolNavigate: []map[string]any{{
+				"type": "text",
+				"text": "Error: Target page, context or browser has been closed",
+			}},
+		},
+	}
+	tool := newToolWithDrivers(
+		defaultProfileName,
+		false,
+		navigationPolicy{},
+		nil,
+		nil,
+		nil,
+		map[string]ProfileConfig{
+			defaultProfileName: {Name: defaultProfileName},
+		},
+		map[string]driver{
+			defaultProfileName: drv,
+		},
+	)
+	firstCtx := agent.NewInvocationContext(
+		context.Background(),
+		agent.NewInvocation(),
+	)
+	secondCtx := agent.NewInvocationContext(
+		context.Background(),
+		agent.NewInvocation(),
+	)
+
+	for i := 0; i < browserCrashThreshold; i++ {
+		_, err := tool.Call(
+			firstCtx,
+			mustJSON(t, map[string]any{
+				"action": actionNavigate,
+				"url":    "https://example.com",
+			}),
+		)
+		require.NoError(t, err)
+	}
+	_, err := tool.Call(
+		firstCtx,
+		mustJSON(t, map[string]any{"action": actionSnapshot}),
+	)
+	require.NoError(t, err)
+	require.Len(t, drv.calls, browserCrashThreshold)
+
+	raw, err := tool.Call(
+		secondCtx,
+		mustJSON(t, map[string]any{"action": actionSnapshot}),
+	)
+	require.NoError(t, err)
+	got := raw.(Result)
+	require.NotEqual(t, stateDegraded, got.State)
+	require.Len(t, drv.calls, browserCrashThreshold+1)
+}
+
+func TestDetectBrowserBackendCrash(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{
+			name: "target closed",
+			text: "### Error\nError: Target page, context or browser has been closed",
+			want: true,
+		},
+		{
+			name: "sigtrap",
+			text: "<process did exit: exitCode=null, signal=SIGTRAP>",
+			want: true,
+		},
+		{
+			name: "ordinary page text",
+			text: "A post explaining why a browser has been closed",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, _ := detectBrowserBackendCrash(tt.text)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestToolCall_ActClickSelectsRequestedTab(t *testing.T) {
 	t.Parallel()
 

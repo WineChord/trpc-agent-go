@@ -491,6 +491,16 @@ func (t *Tool) Call(ctx context.Context, args []byte) (any, error) {
 	}
 	driverType := t.driverTypeForInput(profileName, in)
 	t.registerCancelCleanup(ctx, profileName, drv)
+	if result, ok := browserCrashBlockedResult(
+		ctx,
+		actionKey,
+		profileName,
+		driverType,
+		t.evaluateEnabled,
+	); ok {
+		return result, nil
+	}
+	drv = newCrashGuardedDriver(ctx, profileName, drv)
 
 	switch actionKey {
 	case strings.ToLower(actionStart):
