@@ -577,13 +577,92 @@ func truncateResultOutput(output string, maxChars int) string {
 	if charCount <= maxChars {
 		return output
 	}
-	return firstRunes(output, maxChars) + fmt.Sprintf(
-		"\n\n[OpenClaw truncated command output to %d of %d chars. "+
-			"Write large outputs to a file and read only the needed "+
-			"chunks with file tools or shell commands.]",
+	return appendTruncationNotice(
+		firstRunes(output, maxChars),
 		maxChars,
 		charCount,
 	)
+}
+
+func truncateLineWindowOutput(
+	output string,
+	maxChars int,
+	offset int,
+	nextOffset int,
+) (string, int) {
+	if maxChars <= 0 {
+		return output, nextOffset
+	}
+	output = strings.ToValidUTF8(output, "\uFFFD")
+	charCount := utf8.RuneCountInString(output)
+	if charCount <= maxChars {
+		return output, nextOffset
+	}
+	if output == "" {
+		return output, nextOffset
+	}
+
+	lines := strings.Split(output, "\n")
+	parts := make([]string, 0, len(lines))
+	keptChars := 0
+	for _, line := range lines {
+		addChars := utf8.RuneCountInString(line)
+		if len(parts) > 0 {
+			addChars++
+		}
+		if keptChars+addChars > maxChars {
+			if len(parts) == 0 {
+				prefix := firstRunes(line, maxChars)
+				return appendTruncationNotice(
+					prefix,
+					utf8.RuneCountInString(prefix),
+					charCount,
+				), clampNextOffset(offset+1, offset, nextOffset)
+			}
+			break
+		}
+		parts = append(parts, line)
+		keptChars += addChars
+	}
+
+	consumed := len(parts)
+	if consumed == 0 {
+		prefix := firstRunes(output, maxChars)
+		return appendTruncationNotice(
+			prefix,
+			utf8.RuneCountInString(prefix),
+			charCount,
+		), clampNextOffset(offset+1, offset, nextOffset)
+	}
+	return appendTruncationNotice(
+		strings.Join(parts, "\n"),
+		keptChars,
+		charCount,
+	), clampNextOffset(offset+consumed, offset, nextOffset)
+}
+
+func appendTruncationNotice(
+	prefix string,
+	keptChars int,
+	totalChars int,
+) string {
+	return prefix + fmt.Sprintf(
+		"\n\n[OpenClaw truncated command output to %d of %d chars. "+
+			"Write large outputs to a file and read only the needed "+
+			"chunks with file tools or shell commands.]",
+		keptChars,
+		totalChars,
+	)
+}
+
+func clampNextOffset(next int, offset int, end int) int {
+	if next <= offset && end > offset {
+		next = offset + 1
+	}
+	if next > end {
+		return end
+	}
+	return next
 }
 
 func firstRunes(value string, n int) string {
@@ -726,9 +805,7 @@ func (m *Manager) poll(id string, limit *int) (processPoll, error) {
 	if err != nil {
 		return processPoll{}, err
 	}
-	poll := s.poll(limit)
-	poll.Output = m.limitResultOutput(poll.Output)
-	return poll, nil
+	return s.poll(limit, m.maxResultOutputChars), nil
 }
 
 func (m *Manager) log(
@@ -740,9 +817,7 @@ func (m *Manager) log(
 	if err != nil {
 		return processLog{}, err
 	}
-	log := s.log(offset, limit)
-	log.Output = m.limitResultOutput(log.Output)
-	return log, nil
+	return s.log(offset, limit, m.maxResultOutputChars), nil
 }
 
 func (m *Manager) write(

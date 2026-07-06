@@ -216,7 +216,7 @@ type processPoll struct {
 	ExitCode   *int   `json:"exitCode,omitempty"`
 }
 
-func (s *session) poll(limit *int) processPoll {
+func (s *session) poll(limit *int, maxOutputChars int) processPoll {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -235,12 +235,19 @@ func (s *session) poll(limit *int) processPoll {
 	from := start - s.lineBase
 	to := end - s.lineBase
 	out := strings.Join(s.lines[from:to], "\n")
-	s.pollCursor = end
+	out = applyOutputRedactor(s.redact, out)
+	out, next := truncateLineWindowOutput(
+		out,
+		maxOutputChars,
+		start,
+		end,
+	)
+	s.pollCursor = next
 
 	res := processPoll{
-		Output:     applyOutputRedactor(s.redact, out),
+		Output:     out,
 		Offset:     start,
-		NextOffset: end,
+		NextOffset: next,
 	}
 	if s.finished.IsZero() {
 		res.Status = "running"
@@ -258,7 +265,11 @@ type processLog struct {
 	NextOffset int    `json:"nextOffset"`
 }
 
-func (s *session) log(offset *int, limit *int) processLog {
+func (s *session) log(
+	offset *int,
+	limit *int,
+	maxOutputChars int,
+) processLog {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -288,11 +299,18 @@ func (s *session) log(offset *int, limit *int) processLog {
 	from := start - s.lineBase
 	to := end - s.lineBase
 	out := strings.Join(s.lines[from:to], "\n")
+	out = applyOutputRedactor(s.redact, out)
+	out, next := truncateLineWindowOutput(
+		out,
+		maxOutputChars,
+		start,
+		end,
+	)
 
 	return processLog{
-		Output:     applyOutputRedactor(s.redact, out),
+		Output:     out,
 		Offset:     start,
-		NextOffset: end,
+		NextOffset: next,
 	}
 }
 
