@@ -1,0 +1,277 @@
+//
+// Tencent is pleased to support the open source community by making
+// trpc-agent-go available.
+//
+// Copyright (C) 2025 Tencent.  All rights reserved.
+//
+// trpc-agent-go is licensed under the Apache License Version 2.0.
+//
+
+package app
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
+)
+
+func TestModelCallBudgetModel_EnforcesPerContextLimit(t *testing.T) {
+	t.Parallel()
+
+	underlying := &countingBudgetModel{}
+	wrapped := newModelCallBudgetModel(underlying)
+	ctx := withModelCallBudget(context.Background(), 2)
+
+	_, err := wrapped.GenerateContent(ctx, &model.Request{})
+	require.NoError(t, err)
+	_, err = wrapped.GenerateContent(ctx, &model.Request{})
+	require.NoError(t, err)
+	_, err = wrapped.GenerateContent(ctx, &model.Request{})
+	require.ErrorContains(t, err, "max LLM calls (2) exceeded")
+	require.EqualValues(t, 2, underlying.callCount())
+}
+
+func TestModelCallBudgetModel_NoBudgetPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	underlying := &countingBudgetModel{}
+	wrapped := newModelCallBudgetModel(underlying)
+
+	_, err := wrapped.GenerateContent(context.Background(), &model.Request{})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, underlying.callCount())
+}
+
+func TestModelCallBudgetIterModel_NoBudgetPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	underlying := &countingBudgetIterModel{}
+	wrapped := newModelCallBudgetModel(underlying)
+	iter, ok := wrapped.(model.IterModel)
+	require.True(t, ok)
+
+	seq, err := iter.GenerateContentIter(context.Background(), &model.Request{})
+	require.NoError(t, err)
+
+	var responses int
+	seq(func(*model.Response) bool {
+		responses++
+		return true
+	})
+	require.Equal(t, 1, responses)
+	require.EqualValues(t, 1, underlying.iterCallCount())
+}
+
+func TestModelCallBudgetModel_UsesInvocationRuntimeState(t *testing.T) {
+	t.Parallel()
+
+	underlying := &countingBudgetModel{}
+	wrapped := newModelCallBudgetModel(underlying)
+	budget := newModelCallBudget(1, false)
+	inv := agent.NewInvocation(agent.WithInvocationRunOptions(
+		agent.NewRunOptions(agent.MergeRuntimeState(map[string]any{
+			modelCallBudgetRuntimeStateKey: budget,
+		})),
+	))
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	_, err := wrapped.GenerateContent(ctx, &model.Request{})
+	require.NoError(t, err)
+	_, err = wrapped.GenerateContent(ctx, &model.Request{})
+	require.ErrorContains(t, err, "max LLM calls (1) exceeded")
+	require.EqualValues(t, 1, underlying.callCount())
+}
+
+func TestModelCallBudgetIterModel_EnforcesPerContextLimit(t *testing.T) {
+	t.Parallel()
+
+	underlying := &countingBudgetIterModel{}
+	wrapped := newModelCallBudgetModel(underlying)
+	iter, ok := wrapped.(model.IterModel)
+	require.True(t, ok)
+
+	ctx := withModelCallBudget(context.Background(), 1)
+	_, err := iter.GenerateContentIter(ctx, &model.Request{})
+	require.NoError(t, err)
+	_, err = iter.GenerateContentIter(ctx, &model.Request{})
+	require.ErrorContains(t, err, "max LLM calls (1) exceeded")
+	require.EqualValues(t, 1, underlying.iterCallCount())
+}
+
+func TestModelCallBudgetModel_ConcurrentCallsShareLimit(t *testing.T) {
+	t.Parallel()
+
+	underlying := &countingBudgetModel{}
+	wrapped := newModelCallBudgetModel(underlying)
+	ctx := withModelCallBudget(context.Background(), 3)
+
+	var wg sync.WaitGroup
+	var successes atomic.Int64
+	var failures atomic.Int64
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := wrapped.GenerateContent(ctx, &model.Request{})
+			if err != nil {
+				require.ErrorContains(t, err, "max LLM calls (3) exceeded")
+				failures.Add(1)
+				return
+			}
+			successes.Add(1)
+		}()
+	}
+	wg.Wait()
+
+	require.EqualValues(t, 3, successes.Load())
+	require.EqualValues(t, 13, failures.Load())
+	require.EqualValues(t, 3, underlying.callCount())
+}
+
+func TestAppendModelCallBudgetGatewayOption_Disabled(t *testing.T) {
+	t.Parallel()
+
+	opts := appendModelCallBudgetGatewayOption(nil, 0, false)
+	require.Empty(t, opts)
+}
+
+func TestAppendModelCallBudgetGatewayOption_AddsRunBudget(t *testing.T) {
+	t.Parallel()
+
+	opts := appendModelCallBudgetGatewayOption(nil, 1, false)
+	require.Len(t, opts, 1)
+}
+
+func TestModelCallBudgetModel_FinalizesOnLastAllowedCall(t *testing.T) {
+	t.Parallel()
+
+	underlying := &capturingBudgetModel{}
+	wrapped := newModelCallBudgetModel(underlying)
+	ctx := withModelCallBudgetValue(
+		context.Background(),
+		newModelCallBudget(1, true),
+	)
+	req := &model.Request{
+		Messages: []model.Message{model.NewUserMessage("question")},
+		Tools:    map[string]tool.Tool{"search": nil},
+	}
+
+	_, err := wrapped.GenerateContent(ctx, req)
+	require.NoError(t, err)
+	got := underlying.lastRequest()
+	require.NotNil(t, got)
+	require.Nil(t, got.Tools)
+	require.Len(t, got.Messages, 2)
+	require.Contains(
+		t,
+		got.Messages[1].Content,
+		"final allowed model call",
+	)
+	require.Len(t, req.Tools, 1)
+	require.Len(t, req.Messages, 1)
+}
+
+type countingBudgetModel struct {
+	calls atomic.Int64
+}
+
+func (m *countingBudgetModel) GenerateContent(
+	_ context.Context,
+	_ *model.Request,
+) (<-chan *model.Response, error) {
+	m.calls.Add(1)
+	ch := make(chan *model.Response, 1)
+	ch <- &model.Response{}
+	close(ch)
+	return ch, nil
+}
+
+func (m *countingBudgetModel) Info() model.Info {
+	return model.Info{Name: "counting"}
+}
+
+func (m *countingBudgetModel) callCount() int64 {
+	return m.calls.Load()
+}
+
+type countingBudgetIterModel struct {
+	countingBudgetModel
+	iterCalls atomic.Int64
+}
+
+func (m *countingBudgetIterModel) GenerateContentIter(
+	_ context.Context,
+	_ *model.Request,
+) (model.Seq[*model.Response], error) {
+	m.iterCalls.Add(1)
+	return func(yield func(*model.Response) bool) {
+		yield(&model.Response{})
+	}, nil
+}
+
+func (m *countingBudgetIterModel) iterCallCount() int64 {
+	return m.iterCalls.Load()
+}
+
+func TestBuildModelCallBudgetRunOptionResolverInjectsBudget(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	resolver := buildModelCallBudgetRunOptionResolver(1, false)
+	ctx, runOpts, err := resolver(context.Background(), gateway.RunOptionInput{})
+	require.NoError(t, err)
+	require.Len(t, runOpts, 1)
+
+	budget := modelCallBudgetFromContext(ctx)
+	require.NotNil(t, budget)
+
+	opts := agent.NewRunOptions(runOpts...)
+	stateBudget, ok := opts.RuntimeState[modelCallBudgetRuntimeStateKey].(*modelCallBudget)
+	require.True(t, ok)
+	require.Same(t, budget, stateBudget)
+
+	underlying := &countingBudgetModel{}
+	wrapped := newModelCallBudgetModel(underlying)
+	_, err = wrapped.GenerateContent(ctx, &model.Request{})
+	require.NoError(t, err)
+	_, err = wrapped.GenerateContent(ctx, &model.Request{})
+	require.ErrorContains(t, err, "max LLM calls (1) exceeded")
+	require.EqualValues(t, 1, underlying.callCount())
+}
+
+type capturingBudgetModel struct {
+	mu  sync.Mutex
+	req *model.Request
+}
+
+func (m *capturingBudgetModel) GenerateContent(
+	_ context.Context,
+	req *model.Request,
+) (<-chan *model.Response, error) {
+	m.mu.Lock()
+	m.req = req
+	m.mu.Unlock()
+	ch := make(chan *model.Response, 1)
+	ch <- &model.Response{}
+	close(ch)
+	return ch, nil
+}
+
+func (m *capturingBudgetModel) Info() model.Info {
+	return model.Info{Name: "capture"}
+}
+
+func (m *capturingBudgetModel) lastRequest() *model.Request {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.req
+}
