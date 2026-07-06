@@ -527,6 +527,9 @@ func (m *Manager) startBackground(
 		// "It is thus incorrect to call Wait before all reads from the
 		// pipe have completed."
 		ps, _ := cmd.Process.Wait()
+		if !params.Background {
+			_ = cleanupCommandProcessGroup(cmd)
+		}
 		waitDone(sess.ioDone, defaultIODrain)
 		code := -1
 		if ps != nil {

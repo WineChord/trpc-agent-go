@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -234,15 +235,13 @@ func (s *session) poll(limit *int, maxOutputChars int) processPoll {
 
 	from := start - s.lineBase
 	to := end - s.lineBase
-	out := strings.Join(s.lines[from:to], "\n")
-	out, next, _ := truncateLineWindowOutput(
-		out,
+	out, next := renderSessionLineWindow(
+		s.lines[from:to],
 		maxOutputChars,
 		start,
 		end,
+		s.redact,
 	)
-	out = applyOutputRedactor(s.redact, out)
-	out = truncateResultOutput(out, maxOutputChars)
 	s.pollCursor = next
 
 	res := processPoll{
@@ -299,21 +298,66 @@ func (s *session) log(
 
 	from := start - s.lineBase
 	to := end - s.lineBase
-	out := strings.Join(s.lines[from:to], "\n")
-	out, next, _ := truncateLineWindowOutput(
-		out,
+	out, next := renderSessionLineWindow(
+		s.lines[from:to],
 		maxOutputChars,
 		start,
 		end,
+		s.redact,
 	)
-	out = applyOutputRedactor(s.redact, out)
-	out = truncateResultOutput(out, maxOutputChars)
 
 	return processLog{
 		Output:     out,
 		Offset:     start,
 		NextOffset: next,
 	}
+}
+
+func renderSessionLineWindow(
+	lines []string,
+	maxOutputChars int,
+	offset int,
+	nextOffset int,
+	redact func(string) string,
+) (string, int) {
+	raw := strings.Join(lines, "\n")
+	if maxOutputChars <= 0 || raw == "" {
+		return applyOutputRedactor(redact, raw), nextOffset
+	}
+
+	redactedAll := normalizeOutput(applyOutputRedactor(redact, raw))
+	totalChars := utf8.RuneCountInString(redactedAll)
+	if totalChars <= maxOutputChars {
+		return redactedAll, nextOffset
+	}
+
+	var kept string
+	var keptChars int
+	for i := 1; i <= len(lines); i++ {
+		rawCandidate := strings.Join(lines[:i], "\n")
+		candidate := normalizeOutput(
+			applyOutputRedactor(redact, rawCandidate),
+		)
+		candidateChars := utf8.RuneCountInString(candidate)
+		if candidateChars > maxOutputChars {
+			if i == 1 {
+				out := truncateResultOutput(candidate, maxOutputChars)
+				next := clampNextOffset(offset+1, offset, nextOffset)
+				return out, next
+			}
+			out := appendTruncationNotice(kept, keptChars, totalChars)
+			next := clampNextOffset(offset+i-1, offset, nextOffset)
+			return out, next
+		}
+		kept = candidate
+		keptChars = candidateChars
+	}
+
+	return truncateResultOutput(redactedAll, maxOutputChars), nextOffset
+}
+
+func normalizeOutput(output string) string {
+	return strings.ToValidUTF8(output, "\uFFFD")
 }
 
 type processWrite struct {

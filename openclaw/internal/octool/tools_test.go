@@ -1132,6 +1132,51 @@ func TestExecTool_NormalExitCleansBackgroundProcessGroup(t *testing.T) {
 	}, 800*time.Millisecond, 20*time.Millisecond)
 }
 
+func TestExecTool_SessionExitCleansExecBypassedTrap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process group signaling is unix-specific")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is not available")
+	}
+
+	marker := filepath.Join(t.TempDir(), "orphan-marker")
+	mgr := NewManager(WithMaxYield(time.Second))
+	yieldMs := 1000
+
+	res, err := mgr.Exec(context.Background(), execParams{
+		Command: "exec bash -c " + strconv.Quote(
+			"(sleep 0.4; echo orphan > "+
+				strconv.Quote(marker)+") >/dev/null 2>&1 & echo done",
+		),
+		YieldMs: &yieldMs,
+	})
+	require.NoError(t, err)
+	output := res.Output
+	switch res.Status {
+	case "exited":
+		require.Equal(t, 0, res.ExitCode)
+	case "running":
+		require.NotEmpty(t, res.SessionID)
+		t.Cleanup(func() {
+			_ = mgr.kill(res.SessionID)
+		})
+		output += pollUntilExited(t, mgr, res.SessionID)
+	default:
+		t.Fatalf("unexpected status: %s", res.Status)
+	}
+	require.Contains(t, output, "done")
+
+	require.Never(t, func() bool {
+		_, err = os.Stat(marker)
+		if err == nil {
+			return true
+		}
+		require.ErrorIs(t, err, os.ErrNotExist)
+		return false
+	}, 800*time.Millisecond, 20*time.Millisecond)
+}
+
 func TestExecTool_ContextCancelKillsYieldSessionProcessGroup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process group signaling is unix-specific")
@@ -1609,9 +1654,25 @@ func TestManager_MaxResultOutputCharsPollCapsExpandedRedaction(
 	poll, err := mgr.poll(sess.id, nil)
 	require.NoError(t, err)
 	require.Equal(t, 0, poll.Offset)
+	require.Equal(t, 1, poll.NextOffset)
+	requireTruncatedExecOutput(t, poll.Output)
+	require.Contains(t, poll.Output, "alpha")
+	require.NotContains(t, poll.Output, "bravo-with-expanded-redaction")
+	require.NotContains(t, poll.Output, "charlie")
+
+	poll, err = mgr.poll(sess.id, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, poll.Offset)
 	require.Equal(t, 2, poll.NextOffset)
 	requireTruncatedExecOutput(t, poll.Output)
+	require.Contains(t, poll.Output, "bravo-with")
 	require.NotContains(t, poll.Output, "charlie")
+
+	log, err := mgr.log(sess.id, &poll.NextOffset, nil)
+	require.NoError(t, err)
+	require.Equal(t, 2, log.Offset)
+	require.Equal(t, 3, log.NextOffset)
+	require.Contains(t, log.Output, "charlie")
 }
 
 func TestManager_MaxResultOutputCharsPollOversizedSingleLine(
