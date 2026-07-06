@@ -1354,6 +1354,78 @@ func TestManager_MaxResultOutputCharsTruncatesSessionCompletion(
 	requireTruncatedExecOutput(t, res.Output)
 }
 
+func TestManager_MaxResultOutputCharsTruncatesRunningTail(
+	t *testing.T,
+) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is not available")
+	}
+
+	mgr := NewManager(
+		WithMaxResultOutputChars(80),
+		WithMaxYield(2*time.Second),
+	)
+	execTool := newExecCommandTool(mgr)
+
+	out, err := execTool.Call(context.Background(), mustJSON(t, map[string]any{
+		"command": "printf 'abcdefghijklmnopqrstuvwxyz%.0s' {1..8}; " +
+			"printf '\\n'; sleep 3",
+		"yield_time_ms": 1500,
+	}))
+	require.NoError(t, err)
+
+	res := out.(execResult)
+	require.Equal(t, "running", res.Status)
+	require.NotEmpty(t, res.SessionID)
+	t.Cleanup(func() {
+		_ = mgr.kill(res.SessionID)
+	})
+	requireTruncatedExecOutput(t, res.Output)
+}
+
+func TestManager_MaxResultOutputCharsTruncatesPollAndLog(
+	t *testing.T,
+) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is not available")
+	}
+
+	mgr := NewManager(
+		WithMaxResultOutputChars(80),
+		WithMaxYield(2*time.Second),
+	)
+	execTool := newExecCommandTool(mgr)
+	writeTool := newWriteStdinTool(mgr)
+
+	out, err := execTool.Call(context.Background(), mustJSON(t, map[string]any{
+		"command": "printf 'abcdefghijklmnopqrstuvwxyz%.0s' {1..8}; " +
+			"printf '\\n'; sleep 3",
+		"yield_time_ms": 1500,
+	}))
+	require.NoError(t, err)
+
+	res := out.(execResult)
+	require.Equal(t, "running", res.Status)
+	require.NotEmpty(t, res.SessionID)
+	t.Cleanup(func() {
+		_ = mgr.kill(res.SessionID)
+	})
+
+	writeAny, err := writeTool.Call(
+		context.Background(),
+		mustJSON(t, map[string]any{
+			"session_id":    res.SessionID,
+			"yield_time_ms": 0,
+		}),
+	)
+	require.NoError(t, err)
+	requireTruncatedExecOutput(t, outputField(writeAny.(map[string]any)))
+
+	log, err := mgr.log(res.SessionID, nil, nil)
+	require.NoError(t, err)
+	requireTruncatedExecOutput(t, log.Output)
+}
+
 func requireTruncatedExecOutput(t *testing.T, output string) {
 	t.Helper()
 

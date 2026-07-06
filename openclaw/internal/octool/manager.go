@@ -232,7 +232,7 @@ func (m *Manager) Exec(
 		return execResult{
 			Status:    "running",
 			SessionID: sess.id,
-			Output:    sess.tail(defaultLogTail),
+			Output:    m.limitResultOutput(sess.tail(defaultLogTail)),
 		}, nil
 	}
 
@@ -274,7 +274,7 @@ func (m *Manager) Exec(
 		return execResult{
 			Status:    "running",
 			SessionID: sess.id,
-			Output:    sess.tail(defaultLogTail),
+			Output:    m.limitResultOutput(sess.tail(defaultLogTail)),
 		}, nil
 	}
 }
@@ -726,7 +726,9 @@ func (m *Manager) poll(id string, limit *int) (processPoll, error) {
 	if err != nil {
 		return processPoll{}, err
 	}
-	return s.poll(limit), nil
+	poll := s.poll(limit)
+	poll.Output = m.limitResultOutput(poll.Output)
+	return poll, nil
 }
 
 func (m *Manager) log(
@@ -738,7 +740,9 @@ func (m *Manager) log(
 	if err != nil {
 		return processLog{}, err
 	}
-	return s.log(offset, limit), nil
+	log := s.log(offset, limit)
+	log.Output = m.limitResultOutput(log.Output)
+	return log, nil
 }
 
 func (m *Manager) write(
