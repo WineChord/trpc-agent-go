@@ -80,6 +80,17 @@ func TestSandboxExecToolDescription(t *testing.T) {
 	)
 }
 
+func TestExecToolDescriptionMentionsBackgroundForPersistentProcesses(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	desc := execToolDescription(false)
+	require.Contains(t, desc, "Foreground commands clean up child jobs")
+	require.Contains(t, desc, "`background: true`")
+	require.Contains(t, desc, "later tools must keep using them")
+}
+
 func TestNewSandboxExecCommandToolWithMemoryFileStore_WiresRegistry(t *testing.T) {
 	t.Parallel()
 
