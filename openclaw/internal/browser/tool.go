@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -1443,10 +1444,21 @@ func (t *Tool) handleSnapshot(
 	return result, nil
 }
 
-func (t *Tool) resolveScreenshotFilename(filename string) (string, error) {
+func (t *Tool) resolveScreenshotFilename(
+	filename string,
+	imageType string,
+) (string, error) {
 	filename = strings.TrimSpace(filename)
-	if filename == "" || filepath.IsAbs(filename) ||
-		strings.TrimSpace(t.screenshotDir) == "" {
+	screenshotDir := strings.TrimSpace(t.screenshotDir)
+	if screenshotDir == "" {
+		return filename, nil
+	}
+	if filename == "" {
+		filename = "screenshot-" + time.Now().UTC().Format(
+			"20060102T150405.000000000",
+		) + "." + screenshotExtension(imageType)
+	}
+	if filepath.IsAbs(filename) {
 		return filename, nil
 	}
 	cleaned := filepath.Clean(filename)
@@ -1460,7 +1472,7 @@ func (t *Tool) resolveScreenshotFilename(filename string) (string, error) {
 			filename,
 		)
 	}
-	root, err := filepath.Abs(strings.TrimSpace(t.screenshotDir))
+	root, err := filepath.Abs(screenshotDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve browser screenshot_dir: %w", err)
 	}
@@ -1476,6 +1488,17 @@ func (t *Tool) resolveScreenshotFilename(filename string) (string, error) {
 		return "", fmt.Errorf("create browser screenshot dir: %w", err)
 	}
 	return target, nil
+}
+
+func screenshotExtension(imageType string) string {
+	switch strings.ToLower(strings.TrimSpace(imageType)) {
+	case "jpeg", "jpg":
+		return "jpg"
+	case "webp":
+		return "webp"
+	default:
+		return "png"
+	}
 }
 
 func pathInDir(path string, dir string) bool {
@@ -1497,7 +1520,7 @@ func (t *Tool) handleScreenshot(
 	if in.FullPage != nil {
 		args["fullPage"] = *in.FullPage
 	}
-	filename, err := t.resolveScreenshotFilename(in.Filename)
+	filename, err := t.resolveScreenshotFilename(in.Filename, in.Type)
 	if err != nil {
 		return Result{}, err
 	}

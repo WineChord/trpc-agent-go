@@ -2790,6 +2790,35 @@ func TestToolCall_ScreenshotDirRejectsEscapingFilename(t *testing.T) {
 	require.Contains(t, err.Error(), "escapes screenshot_dir")
 }
 
+func TestToolCall_ScreenshotDirProvidesDefaultFilename(t *testing.T) {
+	t.Parallel()
+
+	drv := &fakeDriver{
+		callResult: map[string]any{
+			mcpToolScreenshot: textPayload("ok"),
+		},
+	}
+	dir := t.TempDir()
+	tool := newTestTool(drv)
+	tool.screenshotDir = dir
+
+	_, err := tool.Call(
+		context.Background(),
+		mustJSON(t, map[string]any{
+			"action": actionScreenshot,
+			"type":   "jpeg",
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, drv.calls, 1)
+	filename, _ := drv.calls[0].Args["filename"].(string)
+	require.NotEmpty(t, filename)
+	require.DirExists(t, filepath.Dir(filename))
+	require.Equal(t, dir, filepath.Dir(filename))
+	require.Contains(t, filepath.Base(filename), "screenshot-")
+	require.Equal(t, ".jpg", filepath.Ext(filename))
+}
+
 func TestToolCall_ScreenshotCompactsBrowserCrashContent(t *testing.T) {
 	t.Parallel()
 
