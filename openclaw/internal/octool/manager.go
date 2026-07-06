@@ -232,7 +232,7 @@ func (m *Manager) Exec(
 		return execResult{
 			Status:    "running",
 			SessionID: sess.id,
-			Output:    m.limitResultOutput(sess.tail(defaultLogTail)),
+			Output:    m.limitTailResultOutput(sess.tail(defaultLogTail)),
 		}, nil
 	}
 
@@ -274,7 +274,7 @@ func (m *Manager) Exec(
 		return execResult{
 			Status:    "running",
 			SessionID: sess.id,
-			Output:    m.limitResultOutput(sess.tail(defaultLogTail)),
+			Output:    m.limitTailResultOutput(sess.tail(defaultLogTail)),
 		}, nil
 	}
 }
@@ -540,6 +540,13 @@ func (m *Manager) limitResultOutput(output string) string {
 	return truncateResultOutput(output, m.maxResultOutputChars)
 }
 
+func (m *Manager) limitTailResultOutput(output string) string {
+	if m == nil || m.maxResultOutputChars <= 0 {
+		return output
+	}
+	return truncateTailResultOutput(output, m.maxResultOutputChars)
+}
+
 func (m *Manager) commandTimeout(timeoutS *int) time.Duration {
 	timeout := m.timeout
 	if timeoutS != nil && *timeoutS > 0 {
@@ -589,17 +596,17 @@ func truncateLineWindowOutput(
 	maxChars int,
 	offset int,
 	nextOffset int,
-) (string, int) {
+) (string, int, bool) {
 	if maxChars <= 0 {
-		return output, nextOffset
+		return output, nextOffset, false
 	}
 	output = strings.ToValidUTF8(output, "\uFFFD")
 	charCount := utf8.RuneCountInString(output)
 	if charCount <= maxChars {
-		return output, nextOffset
+		return output, nextOffset, false
 	}
 	if output == "" {
-		return output, nextOffset
+		return output, nextOffset, false
 	}
 
 	lines := strings.Split(output, "\n")
@@ -617,7 +624,7 @@ func truncateLineWindowOutput(
 					prefix,
 					utf8.RuneCountInString(prefix),
 					charCount,
-				), clampNextOffset(offset+1, offset, nextOffset)
+				), clampNextOffset(offset+1, offset, nextOffset), true
 			}
 			break
 		}
@@ -632,13 +639,32 @@ func truncateLineWindowOutput(
 			prefix,
 			utf8.RuneCountInString(prefix),
 			charCount,
-		), clampNextOffset(offset+1, offset, nextOffset)
+		), clampNextOffset(offset+1, offset, nextOffset), true
 	}
 	return appendTruncationNotice(
 		strings.Join(parts, "\n"),
 		keptChars,
 		charCount,
-	), clampNextOffset(offset+consumed, offset, nextOffset)
+	), clampNextOffset(offset+consumed, offset, nextOffset), true
+}
+
+func truncateTailResultOutput(output string, maxChars int) string {
+	if maxChars <= 0 {
+		return output
+	}
+	output = strings.ToValidUTF8(output, "\uFFFD")
+	charCount := utf8.RuneCountInString(output)
+	if charCount <= maxChars {
+		return output
+	}
+	return fmt.Sprintf(
+		"[OpenClaw truncated command output to the last %d of %d "+
+			"chars. Write large outputs to a file and read only "+
+			"the needed chunks with file tools or shell commands.]\n\n%s",
+		maxChars,
+		charCount,
+		lastRunes(output, maxChars),
+	)
 }
 
 func appendTruncationNotice(
@@ -673,6 +699,24 @@ func firstRunes(value string, n int) string {
 	for idx := range value {
 		if count == n {
 			return value[:idx]
+		}
+		count++
+	}
+	return value
+}
+
+func lastRunes(value string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	start := utf8.RuneCountInString(value) - n
+	if start <= 0 {
+		return value
+	}
+	count := 0
+	for idx := range value {
+		if count == start {
+			return value[idx:]
 		}
 		count++
 	}

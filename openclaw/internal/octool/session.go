@@ -235,13 +235,16 @@ func (s *session) poll(limit *int, maxOutputChars int) processPoll {
 	from := start - s.lineBase
 	to := end - s.lineBase
 	out := strings.Join(s.lines[from:to], "\n")
-	out = applyOutputRedactor(s.redact, out)
-	out, next := truncateLineWindowOutput(
+	out, next, truncated := truncateLineWindowOutput(
 		out,
 		maxOutputChars,
 		start,
 		end,
 	)
+	out = applyOutputRedactor(s.redact, out)
+	if !truncated {
+		out = truncateResultOutput(out, maxOutputChars)
+	}
 	s.pollCursor = next
 
 	res := processPoll{
@@ -299,13 +302,16 @@ func (s *session) log(
 	from := start - s.lineBase
 	to := end - s.lineBase
 	out := strings.Join(s.lines[from:to], "\n")
-	out = applyOutputRedactor(s.redact, out)
-	out, next := truncateLineWindowOutput(
+	out, next, truncated := truncateLineWindowOutput(
 		out,
 		maxOutputChars,
 		start,
 		end,
 	)
+	out = applyOutputRedactor(s.redact, out)
+	if !truncated {
+		out = truncateResultOutput(out, maxOutputChars)
+	}
 
 	return processLog{
 		Output:     out,

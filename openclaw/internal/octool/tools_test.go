@@ -1368,8 +1368,8 @@ func TestManager_MaxResultOutputCharsTruncatesRunningTail(
 	execTool := newExecCommandTool(mgr)
 
 	out, err := execTool.Call(context.Background(), mustJSON(t, map[string]any{
-		"command": "printf 'abcdefghijklmnopqrstuvwxyz%.0s' {1..8}; " +
-			"printf '\\n'; sleep 3",
+		"command": "printf 'old%.0s' {1..80}; " +
+			"printf '\\nLATEST\\n'; sleep 3",
 		"yield_time_ms": 1500,
 	}))
 	require.NoError(t, err)
@@ -1381,6 +1381,7 @@ func TestManager_MaxResultOutputCharsTruncatesRunningTail(
 		_ = mgr.kill(res.SessionID)
 	})
 	requireTruncatedExecOutput(t, res.Output)
+	require.Contains(t, res.Output, "LATEST")
 }
 
 func TestManager_MaxResultOutputCharsTruncatesPollAndLog(
@@ -1459,6 +1460,35 @@ func TestManager_MaxResultOutputCharsPollKeepsNextOffset(
 	require.Equal(t, 3, log.Offset)
 	require.Equal(t, 4, log.NextOffset)
 	require.Contains(t, log.Output, "delta")
+}
+
+func TestManager_MaxResultOutputCharsPollUsesRawLineOffsets(
+	t *testing.T,
+) {
+	mgr := NewManager(WithMaxResultOutputChars(12))
+	sess := newSession("session-id", "cmd", 0)
+	sess.redact = func(output string) string {
+		return strings.ReplaceAll(output, "bravo", "bravo\ninserted")
+	}
+	sess.appendOutput("alpha\nbravo\ncharlie\ndelta\n")
+	sess.markDone(0)
+
+	mgr.mu.Lock()
+	mgr.sessions[sess.id] = sess
+	mgr.mu.Unlock()
+
+	poll, err := mgr.poll(sess.id, nil)
+	require.NoError(t, err)
+	require.Equal(t, 0, poll.Offset)
+	require.Equal(t, 2, poll.NextOffset)
+	require.Contains(t, poll.Output, "inserted")
+	require.NotContains(t, poll.Output, "charlie")
+
+	poll, err = mgr.poll(sess.id, nil)
+	require.NoError(t, err)
+	require.Equal(t, 2, poll.Offset)
+	require.Equal(t, 3, poll.NextOffset)
+	require.Contains(t, poll.Output, "charlie")
 }
 
 func requireTruncatedExecOutput(t *testing.T, output string) {
