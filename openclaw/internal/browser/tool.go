@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -298,6 +300,7 @@ type input struct {
 type Tool struct {
 	defaultProfile  string
 	evaluateEnabled bool
+	screenshotDir   string
 	navigation      navigationPolicy
 	hostServer      *serverTargetConfig
 	sandboxServer   *serverTargetConfig
@@ -343,7 +346,7 @@ func NewTool(cfg Config) (*Tool, error) {
 		}
 	}
 
-	return newToolWithDrivers(
+	tool := newToolWithDrivers(
 		resolved.DefaultProfile,
 		resolved.EvaluateEnabled,
 		resolved.Navigation,
@@ -352,7 +355,9 @@ func NewTool(cfg Config) (*Tool, error) {
 		resolved.NodeTargets,
 		profiles,
 		drivers,
-	), nil
+	)
+	tool.screenshotDir = resolved.ScreenshotDir
+	return tool, nil
 }
 
 func newToolWithDrivers(
@@ -817,10 +822,13 @@ func browserSchema(evaluateEnabled bool, driverType string) *tool.Schema {
 			Type:                 "object",
 			AdditionalProperties: true,
 		},
-		"path":        stringSchema("Download output path."),
-		"paths":       stringArraySchema("Upload paths."),
-		"inputRef":    stringSchema("Upload input ref."),
-		"filename":    stringSchema("Optional output filename."),
+		"path":     stringSchema("Download output path."),
+		"paths":    stringArraySchema("Upload paths."),
+		"inputRef": stringSchema("Upload input ref."),
+		"filename": stringSchema(
+			"Optional output filename. When browser screenshot_dir is " +
+				"configured, relative screenshot filenames are saved there.",
+		),
 		"timeoutMs":   numberSchema("Timeout in milliseconds."),
 		"clear":       boolSchema("Clear existing override."),
 		"accept":      boolSchema("Dialog accept flag."),
@@ -1435,6 +1443,45 @@ func (t *Tool) handleSnapshot(
 	return result, nil
 }
 
+func (t *Tool) resolveScreenshotFilename(filename string) (string, error) {
+	filename = strings.TrimSpace(filename)
+	if filename == "" || filepath.IsAbs(filename) ||
+		strings.TrimSpace(t.screenshotDir) == "" {
+		return filename, nil
+	}
+	cleaned := filepath.Clean(filename)
+	if cleaned == "." {
+		return "", nil
+	}
+	if cleaned == ".." ||
+		strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf(
+			"browser screenshot filename %q escapes screenshot_dir",
+			filename,
+		)
+	}
+	root, err := filepath.Abs(strings.TrimSpace(t.screenshotDir))
+	if err != nil {
+		return "", fmt.Errorf("resolve browser screenshot_dir: %w", err)
+	}
+	root = filepath.Clean(root)
+	target := filepath.Clean(filepath.Join(root, cleaned))
+	if !pathInDir(target, root) {
+		return "", fmt.Errorf(
+			"browser screenshot filename %q escapes screenshot_dir",
+			filename,
+		)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return "", fmt.Errorf("create browser screenshot dir: %w", err)
+	}
+	return target, nil
+}
+
+func pathInDir(path string, dir string) bool {
+	return path == dir || strings.HasPrefix(path, dir+string(os.PathSeparator))
+}
+
 func (t *Tool) handleScreenshot(
 	ctx context.Context,
 	profile string,
@@ -1450,7 +1497,11 @@ func (t *Tool) handleScreenshot(
 	if in.FullPage != nil {
 		args["fullPage"] = *in.FullPage
 	}
-	if filename := strings.TrimSpace(in.Filename); filename != "" {
+	filename, err := t.resolveScreenshotFilename(in.Filename)
+	if err != nil {
+		return Result{}, err
+	}
+	if filename != "" {
 		args["filename"] = filename
 	}
 	if ref := strings.TrimSpace(in.Ref); ref != "" {

@@ -11,6 +11,7 @@ package imageinspect
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -404,6 +405,33 @@ func TestResolveAllowedRelativePathRejectsDuplicateBasenames(t *testing.T) {
 	_, err = tool.resolvePath("same.png")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "multiple files")
+}
+
+func TestResolveAllowedRelativePathFindsPreferredOutputBeforeLargeWalk(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	many := filepath.Join(dir, "many")
+	require.NoError(t, os.MkdirAll(many, 0o755))
+	for n := 0; n <= maxBasenameSearchEntries; n++ {
+		require.NoError(
+			t,
+			os.WriteFile(
+				filepath.Join(many, fmt.Sprintf("file-%05d.txt", n)),
+				[]byte("x"),
+				0o644,
+			),
+		)
+	}
+	target := filepath.Join(dir, "workspaces", "scratch", "out", "shot.png")
+	require.NoError(t, os.MkdirAll(filepath.Dir(target), 0o755))
+	writeTestPNG(t, target, image.Rect(0, 0, 1, 1))
+
+	tool, err := newInspector(Config{AllowedDirs: []string{dir}})
+	require.NoError(t, err)
+	got, err := tool.resolvePath("shot.png")
+	require.NoError(t, err)
+	require.Equal(t, target, got)
 }
 
 func TestResolveAllowedRelativePathMissesDeletedAllowedDir(t *testing.T) {
