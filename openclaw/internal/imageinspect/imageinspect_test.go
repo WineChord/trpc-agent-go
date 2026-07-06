@@ -434,6 +434,24 @@ func TestResolveAllowedRelativePathFindsPreferredOutputBeforeLargeWalk(t *testin
 	require.Equal(t, target, got)
 }
 
+func TestResolvePreferredBasenameRejectsDuplicatePreferredOutputs(t *testing.T) {
+	t.Parallel()
+
+	first := t.TempDir()
+	second := t.TempDir()
+	for _, dir := range []string{first, second} {
+		target := filepath.Join(dir, "workspaces", "scratch", "out", "same.png")
+		require.NoError(t, os.MkdirAll(filepath.Dir(target), 0o755))
+		writeTestPNG(t, target, image.Rect(0, 0, 1, 1))
+	}
+
+	tool, err := newInspector(Config{AllowedDirs: []string{first, second}})
+	require.NoError(t, err)
+	_, err = tool.resolvePath("same.png")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "multiple files")
+}
+
 func TestResolveAllowedRelativePathMissesDeletedAllowedDir(t *testing.T) {
 	t.Parallel()
 
@@ -521,7 +539,9 @@ func writeShellScript(
 	t.Helper()
 
 	path := filepath.Join(dir, name)
+	tmpPath := path + ".tmp"
 	content := "#!/bin/sh\n" + body
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o755))
+	require.NoError(t, os.WriteFile(tmpPath, []byte(content), 0o755))
+	require.NoError(t, os.Rename(tmpPath, path))
 	return path
 }

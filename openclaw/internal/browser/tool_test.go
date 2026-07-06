@@ -2819,6 +2819,38 @@ func TestToolCall_ScreenshotDirProvidesDefaultFilename(t *testing.T) {
 	require.Equal(t, ".jpg", filepath.Ext(filename))
 }
 
+func TestResolveScreenshotFilenameCompatibilityBranches(t *testing.T) {
+	t.Parallel()
+
+	withoutDir := newTestTool(&fakeDriver{})
+	got, err := withoutDir.resolveScreenshotFilename("page.png", "")
+	require.NoError(t, err)
+	require.Equal(t, "page.png", got)
+
+	dir := t.TempDir()
+	tool := newTestTool(&fakeDriver{})
+	tool.screenshotDir = dir
+
+	abs := filepath.Join(dir, "absolute.png")
+	got, err = tool.resolveScreenshotFilename(abs, "png")
+	require.NoError(t, err)
+	require.Equal(t, abs, got)
+
+	got, err = tool.resolveScreenshotFilename(".", "png")
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestScreenshotExtension(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "png", screenshotExtension(""))
+	require.Equal(t, "jpg", screenshotExtension("jpeg"))
+	require.Equal(t, "jpg", screenshotExtension("JPG"))
+	require.Equal(t, "webp", screenshotExtension("webp"))
+	require.Equal(t, "png", screenshotExtension("gif"))
+}
+
 func TestToolCall_ScreenshotCompactsBrowserCrashContent(t *testing.T) {
 	t.Parallel()
 

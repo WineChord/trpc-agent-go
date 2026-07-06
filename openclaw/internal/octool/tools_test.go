@@ -1710,6 +1710,15 @@ func TestManager_MaxResultOutputCharsPollOversizedSingleLine(
 	require.NoError(t, err)
 	require.Equal(t, 1, poll.Offset)
 	require.Equal(t, 2, poll.NextOffset)
+	require.Contains(t, poll.Output, "mnopqrstuvwx")
+	require.NotContains(t, poll.Output, "next")
+	requireTruncatedExecOutput(t, poll.Output)
+
+	poll, err = mgr.poll(sess.id, nil)
+	require.NoError(t, err)
+	require.Equal(t, 2, poll.Offset)
+	require.Equal(t, 4, poll.NextOffset)
+	require.Contains(t, poll.Output, "yz")
 	require.Contains(t, poll.Output, "next")
 }
 
