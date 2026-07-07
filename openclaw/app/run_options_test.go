@@ -831,6 +831,7 @@ model:
   mode: "mock"
   name: "gpt-5"
   openai_variant: "openai"
+  text_only_content: true
   headers:
     X-SMG-Routing-Key: "wineguo"
     X-SMG-Agent-Name: "trpc-claw-benchmark"
@@ -1000,6 +1001,7 @@ memory:
 	require.Equal(t, modeMock, opts.ModelMode)
 	require.Equal(t, "gpt-5", opts.OpenAIModel)
 	require.Equal(t, "openai", opts.OpenAIVariant)
+	require.True(t, opts.OpenAITextOnlyMessageContent)
 	require.Equal(t, map[string]string{
 		"X-SMG-Routing-Key": "wineguo",
 		"X-SMG-Agent-Name":  "trpc-claw-benchmark",
@@ -1262,6 +1264,21 @@ tools:
 	})
 	require.NoError(t, err)
 	require.Equal(t, 45*time.Second, opts.DynamicAgentTimeout)
+}
+
+func TestParseRunOptions_OpenAITextOnlyFlagOverridesConfig(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeTempConfig(t, `
+model:
+  text_only_content: true
+`)
+	opts, err := parseRunOptions([]string{
+		"-config", cfgPath,
+		"-openai-text-only-message-content=false",
+	})
+	require.NoError(t, err)
+	require.False(t, opts.OpenAITextOnlyMessageContent)
 }
 
 func TestParseRunOptions_HostExecDefaultTimeoutFlagOverridesConfig(
