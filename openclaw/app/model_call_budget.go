@@ -31,11 +31,31 @@ type modelCallBudget struct {
 	finalizeOnLast bool
 }
 
+type modelCallBudgetFactory struct {
+	mu             sync.Mutex
+	limit          int
+	finalizeOnLast bool
+	budgets        map[string]*modelCallBudget
+}
+
 func newModelCallBudget(limit int, finalizeOnLast bool) *modelCallBudget {
 	if limit <= 0 {
 		return nil
 	}
 	return &modelCallBudget{
+		limit:          limit,
+		finalizeOnLast: finalizeOnLast,
+	}
+}
+
+func newModelCallBudgetFactory(
+	limit int,
+	finalizeOnLast bool,
+) *modelCallBudgetFactory {
+	if limit <= 0 {
+		return nil
+	}
+	return &modelCallBudgetFactory{
 		limit:          limit,
 		finalizeOnLast: finalizeOnLast,
 	}
@@ -62,14 +82,49 @@ func modelCallBudgetFromContext(ctx context.Context) *modelCallBudget {
 	if ctx == nil {
 		return nil
 	}
-	if budget, _ := ctx.Value(modelCallBudgetKey{}).(*modelCallBudget); budget != nil {
+	budget, _ := ctx.Value(modelCallBudgetKey{}).(*modelCallBudget)
+	if budget != nil {
 		return budget
 	}
-	budget, _ := agent.GetRuntimeStateValueFromContext[*modelCallBudget](
-		ctx,
+	inv, ok := agent.InvocationFromContext(ctx)
+	if !ok || inv == nil {
+		return nil
+	}
+	factory, _ := agent.GetRuntimeStateValue[*modelCallBudgetFactory](
+		&inv.RunOptions,
 		modelCallBudgetRuntimeStateKey,
 	)
+	if factory == nil {
+		return nil
+	}
+	return factory.budgetFor(inv)
+}
+
+func (f *modelCallBudgetFactory) budgetFor(
+	inv *agent.Invocation,
+) *modelCallBudget {
+	if f == nil || inv == nil || f.limit <= 0 {
+		return nil
+	}
+	key := modelCallBudgetInvocationKey(inv)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.budgets == nil {
+		f.budgets = make(map[string]*modelCallBudget)
+	}
+	if budget := f.budgets[key]; budget != nil {
+		return budget
+	}
+	budget := newModelCallBudget(f.limit, f.finalizeOnLast)
+	f.budgets[key] = budget
 	return budget
+}
+
+func modelCallBudgetInvocationKey(inv *agent.Invocation) string {
+	if inv.InvocationID != "" {
+		return inv.InvocationID
+	}
+	return fmt.Sprintf("%p", inv)
 }
 
 func (b *modelCallBudget) use() (bool, error) {
@@ -170,11 +225,11 @@ func buildModelCallBudgetRunOptionResolver(
 		[]agent.RunOption,
 		error,
 	) {
-		budget := newModelCallBudget(limit, finalizeOnLast)
-		return withModelCallBudgetValue(ctx, budget),
+		factory := newModelCallBudgetFactory(limit, finalizeOnLast)
+		return ctx,
 			[]agent.RunOption{
 				agent.MergeRuntimeState(map[string]any{
-					modelCallBudgetRuntimeStateKey: budget,
+					modelCallBudgetRuntimeStateKey: factory,
 				}),
 			},
 			nil
