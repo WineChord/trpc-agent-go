@@ -11,6 +11,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -118,13 +119,16 @@ func TestModelCallBudgetModel_ConcurrentCallsShareLimit(t *testing.T) {
 	var wg sync.WaitGroup
 	var successes atomic.Int64
 	var failures atomic.Int64
+	unexpectedErrors := make(chan string, 16)
 	for range 16 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			_, err := wrapped.GenerateContent(ctx, &model.Request{})
 			if err != nil {
-				require.ErrorContains(t, err, "max LLM calls (3) exceeded")
+				if !strings.Contains(err.Error(), "max LLM calls (3) exceeded") {
+					unexpectedErrors <- err.Error()
+				}
 				failures.Add(1)
 				return
 			}
@@ -132,6 +136,10 @@ func TestModelCallBudgetModel_ConcurrentCallsShareLimit(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	close(unexpectedErrors)
+	for err := range unexpectedErrors {
+		require.Empty(t, err)
+	}
 
 	require.EqualValues(t, 3, successes.Load())
 	require.EqualValues(t, 13, failures.Load())
