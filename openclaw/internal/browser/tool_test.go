@@ -4272,6 +4272,36 @@ func TestToolResolveDriver_TargetFallbackPaths(t *testing.T) {
 		require.Equal(t, "http://127.0.0.1:20790", serverDrv.baseURL)
 	})
 
+	t.Run("sandbox falls back to host server", func(t *testing.T) {
+		tool := newToolWithDrivers(
+			defaultProfileName,
+			false,
+			navigationPolicy{},
+			&serverTargetConfig{
+				ID:        targetHost,
+				ServerURL: "http://127.0.0.1:19790",
+			},
+			nil,
+			nil,
+			map[string]ProfileConfig{
+				defaultProfileName: {Name: defaultProfileName},
+			},
+			map[string]driver{
+				defaultProfileName: &fakeDriver{},
+			},
+		)
+
+		profile, drv, err := tool.resolveDriver(input{
+			Target: targetSandbox,
+		})
+		require.NoError(t, err)
+		require.Equal(t, defaultProfileName, profile)
+
+		serverDrv, ok := drv.(*serverProfileDriver)
+		require.True(t, ok)
+		require.Equal(t, "http://127.0.0.1:19790", serverDrv.baseURL)
+	})
+
 	t.Run("single node auto select", func(t *testing.T) {
 		tool := newToolWithDrivers(
 			defaultProfileName,

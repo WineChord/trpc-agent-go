@@ -967,6 +967,9 @@ func (t *Tool) resolveDriver(
 		if drv, ok := t.serverDriverForTarget(t.sandboxServer, profile); ok {
 			return profile, drv, nil
 		}
+		if drv, ok := t.serverDriverForTarget(t.hostServer, profile); ok {
+			return profile, drv, nil
+		}
 		return "", nil, errors.New(
 			"browser sandbox target is not configured; omit target to " +
 				"use the default host browser",
