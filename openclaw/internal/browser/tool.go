@@ -1152,6 +1152,7 @@ func navigationPolicyInfo(policy navigationPolicy) *NavigationPolicyInfo {
 		!policy.AllowLoopback &&
 		!policy.AllowPrivateNet &&
 		!policy.AllowFileURLs &&
+		!policy.AllowSearchPages &&
 		len(policy.AllowedFileRoots) == 0 {
 		return nil
 	}
@@ -1162,6 +1163,7 @@ func navigationPolicyInfo(policy navigationPolicy) *NavigationPolicyInfo {
 		AllowPrivateNetworks: policy.AllowPrivateNet,
 		AllowFileURLs:        policy.AllowFileURLs,
 		AllowRootFileURLs:    len(policy.AllowedFileRoots) > 0,
+		AllowSearchPages:     policy.AllowSearchPages,
 		AllowedFileRoots:     append([]string(nil), policy.AllowedFileRoots...),
 	}
 }

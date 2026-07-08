@@ -693,6 +693,7 @@ func TestToolCall_ProfilesAreSorted(t *testing.T) {
 			AllowedDomains:   []string{"example.com"},
 			BlockedDomains:   []string{"blocked.example"},
 			AllowLoopback:    true,
+			AllowSearchPages: true,
 			AllowedFileRoots: []string{root},
 		},
 		nil,
@@ -735,6 +736,7 @@ func TestToolCall_ProfilesAreSorted(t *testing.T) {
 	require.True(t, got.NavigationPolicy.AllowLoopback)
 	require.False(t, got.NavigationPolicy.AllowFileURLs)
 	require.True(t, got.NavigationPolicy.AllowRootFileURLs)
+	require.True(t, got.NavigationPolicy.AllowSearchPages)
 	require.Equal(t, []string{root}, got.NavigationPolicy.AllowedFileRoots)
 	require.Equal(t, got.NavigationPolicy, got.Profiles[0].NavigationPolicy)
 	require.Equal(t, got.NavigationPolicy, got.Profiles[1].NavigationPolicy)
