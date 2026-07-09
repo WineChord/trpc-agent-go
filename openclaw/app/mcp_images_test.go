@@ -30,22 +30,28 @@ func TestMCPImageResultMessages_ReturnsImages(t *testing.T) {
 		Role:     model.RoleTool,
 		ToolID:   "tool-call-1",
 		ToolName: "browser_page_screenshot",
-		Content:  "[]",
+		Content:  "contains raw screenshot",
 	}
 
+	result := map[string]any{
+		"action": "screenshot",
+		"content": []mcpContentItem{
+			{Type: "text", Data: "visible text"},
+			{
+				Type:     "image",
+				Data:     encoded,
+				MimeType: "image/png",
+			},
+		},
+	}
 	in := &tool.ToolResultMessagesInput{
 		ToolName:           "browser_page_screenshot",
 		ToolCallID:         "tool-call-1",
 		DefaultToolMessage: defaultMsg,
 		Arguments:          []byte(`{}`),
-		Result:             []mcpContentItem{{Type: "text"}},
+		Result:             result,
 		Declaration:        nil,
 	}
-	in.Result = append(in.Result.([]mcpContentItem), mcpContentItem{
-		Type:     "image",
-		Data:     encoded,
-		MimeType: "image/png",
-	})
 
 	got, err := mcpImageResultMessages(context.Background(), in)
 	require.NoError(t, err)
@@ -54,7 +60,12 @@ func TestMCPImageResultMessages_ReturnsImages(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, msgs, 2)
 
-	require.Equal(t, defaultMsg, msgs[0])
+	require.Equal(t, defaultMsg.Role, msgs[0].Role)
+	require.Equal(t, defaultMsg.ToolID, msgs[0].ToolID)
+	require.Equal(t, defaultMsg.ToolName, msgs[0].ToolName)
+	require.NotContains(t, msgs[0].Content, encoded)
+	require.Contains(t, msgs[0].Content, mcpImageDataOmitted)
+	require.Contains(t, msgs[0].Content, "visible text")
 	require.Equal(t, model.RoleUser, msgs[1].Role)
 	require.Equal(t, mcpImagesUserContent, msgs[1].Content)
 	require.Len(t, msgs[1].ContentParts, 1)
@@ -103,7 +114,11 @@ func TestMCPImageResultMessages_ConsumesAttachmentBudget(t *testing.T) {
 
 	got, err = mcpImageResultMessages(ctx, in)
 	require.NoError(t, err)
-	require.Nil(t, got)
+	msgs, ok = got.([]model.Message)
+	require.True(t, ok)
+	require.Len(t, msgs, 1)
+	require.NotContains(t, msgs[0].Content, encoded)
+	require.Contains(t, msgs[0].Content, mcpImageDataOmitted)
 }
 
 func TestMCPImageResultMessages_NoImagesFallsBack(t *testing.T) {
@@ -120,10 +135,14 @@ func TestMCPImageResultMessages_NoImagesFallsBack(t *testing.T) {
 	require.Nil(t, got)
 }
 
-func TestMCPImageResultMessages_BadBase64FallsBack(t *testing.T) {
+func TestMCPImageResultMessages_BadBase64SanitizesToolMessage(t *testing.T) {
 	t.Parallel()
 
-	defaultMsg := model.Message{Role: model.RoleTool}
+	defaultMsg := model.Message{
+		Role:    model.RoleTool,
+		ToolID:  "tool-call-1",
+		Content: "contains raw image",
+	}
 	in := &tool.ToolResultMessagesInput{
 		DefaultToolMessage: defaultMsg,
 		Result: []mcpContentItem{{
@@ -135,7 +154,11 @@ func TestMCPImageResultMessages_BadBase64FallsBack(t *testing.T) {
 
 	got, err := mcpImageResultMessages(context.Background(), in)
 	require.NoError(t, err)
-	require.Nil(t, got)
+	msgs, ok := got.([]model.Message)
+	require.True(t, ok)
+	require.Len(t, msgs, 1)
+	require.NotContains(t, msgs[0].Content, "not base64")
+	require.Contains(t, msgs[0].Content, mcpImageDataOmitted)
 }
 
 func TestMCPImageResultMessages_NilInputFallsBack(t *testing.T) {
