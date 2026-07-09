@@ -811,6 +811,10 @@ type Runtime struct {
 	evolutionService  evolution.Service
 	toolSets          []tool.ToolSet
 	telemetryShutdown func(context.Context) error
+
+	modelCallBudgetLimit          int
+	modelCallBudgetFinalizeOnLast bool
+	modelCallBudgetDeadlineWindow time.Duration
 }
 
 // Gateway provides the HTTP handler and routes served by OpenClaw.
@@ -1220,8 +1224,10 @@ func NewRuntimeWithOptions(
 			EnableContextCompaction: opts.EnableContextCompaction,
 			ContextCompactionOversizedToolResultMaxTokens: opts.
 				ContextCompactionOversizedToolResultMaxTokens,
-			MaxHistoryRuns:        opts.MaxHistoryRuns,
-			MaxLLMCalls:           opts.MaxLLMCalls,
+			MaxHistoryRuns: opts.MaxHistoryRuns,
+			MaxLLMCalls:    opts.MaxLLMCalls,
+			DeadlineFinalizationWindow: opts.
+				DeadlineFinalizationWindow,
 			MaxToolIterations:     opts.MaxToolIterations,
 			PreloadMemory:         opts.PreloadMemory,
 			GenerationConfig:      opts.GenerationConfig,
@@ -1310,6 +1316,9 @@ func NewRuntimeWithOptions(
 		prompts.Instruction,
 		prompts.SystemPrompt,
 	)
+	rt.modelCallBudgetLimit = opts.MaxLLMCalls
+	rt.modelCallBudgetFinalizeOnLast = opts.FinalizeBeforeMaxLLMCalls
+	rt.modelCallBudgetDeadlineWindow = opts.DeadlineFinalizationWindow
 	rt.toolSets = toolSets
 	rt.tools = runtimeTools
 	rt.skillsWatch = skillsWatch
@@ -1383,6 +1392,7 @@ func NewRuntimeWithOptions(
 		gwOpts,
 		opts.MaxLLMCalls,
 		opts.FinalizeBeforeMaxLLMCalls,
+		opts.DeadlineFinalizationWindow,
 	)
 	if langfuseRT != nil && langfuseRT.runOptionResolver != nil {
 		gwOpts = append(
@@ -1587,6 +1597,17 @@ func (r *Runtime) Run(
 ) (<-chan *event.Event, error) {
 	if r == nil || r.runner == nil {
 		return nil, errors.New("openclaw runtime runner is not configured")
+	}
+	defaultRunOpts := modelCallBudgetRunOptions(
+		r.modelCallBudgetLimit,
+		r.modelCallBudgetFinalizeOnLast,
+		r.modelCallBudgetDeadlineWindow,
+	)
+	if len(defaultRunOpts) > 0 {
+		merged := make([]agent.RunOption, 0, len(defaultRunOpts)+len(runOpts))
+		merged = append(merged, defaultRunOpts...)
+		merged = append(merged, runOpts...)
+		runOpts = merged
 	}
 	return r.runner.Run(ctx, userID, sessionID, message, runOpts...)
 }
@@ -1858,8 +1879,10 @@ func run(
 			EnableContextCompaction: opts.EnableContextCompaction,
 			ContextCompactionOversizedToolResultMaxTokens: opts.
 				ContextCompactionOversizedToolResultMaxTokens,
-			MaxHistoryRuns:        opts.MaxHistoryRuns,
-			MaxLLMCalls:           opts.MaxLLMCalls,
+			MaxHistoryRuns: opts.MaxHistoryRuns,
+			MaxLLMCalls:    opts.MaxLLMCalls,
+			DeadlineFinalizationWindow: opts.
+				DeadlineFinalizationWindow,
 			MaxToolIterations:     opts.MaxToolIterations,
 			PreloadMemory:         opts.PreloadMemory,
 			GenerationConfig:      opts.GenerationConfig,
@@ -2015,6 +2038,7 @@ func run(
 		gwOpts,
 		opts.MaxLLMCalls,
 		opts.FinalizeBeforeMaxLLMCalls,
+		opts.DeadlineFinalizationWindow,
 	)
 	if langfuseRT != nil && langfuseRT.runOptionResolver != nil {
 		gwOpts = append(
@@ -2611,6 +2635,11 @@ func validateAgentRunOptions(agentType string, opts runOptions) error {
 	if opts.MaxLLMCalls != 0 {
 		return errors.New(
 			"claude-code agent does not support max-llm-calls",
+		)
+	}
+	if opts.DeadlineFinalizationWindow != 0 {
+		return errors.New(
+			"claude-code agent does not support deadline-finalization-window",
 		)
 	}
 	if opts.PreloadMemory != 0 {
@@ -3391,6 +3420,7 @@ type agentConfig struct {
 	ContextCompactionOversizedToolResultMaxTokens int
 	MaxHistoryRuns                                int
 	MaxLLMCalls                                   int
+	DeadlineFinalizationWindow                    time.Duration
 	MaxToolIterations                             int
 	PreloadMemory                                 int
 	GenerationConfig                              *model.GenerationConfig
