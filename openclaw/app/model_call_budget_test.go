@@ -185,6 +185,24 @@ func TestModelCallBudget_Guards(t *testing.T) {
 	require.Nil(t, modelCallBudgetFromContext(ctx))
 }
 
+func TestModelCallBudgetDeadlineSoon_Guards(t *testing.T) {
+	t.Parallel()
+
+	require.False(t, modelCallBudgetDeadlineSoon(nil, time.Second))
+	require.False(
+		t,
+		modelCallBudgetDeadlineSoon(context.Background(), time.Second),
+	)
+
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(time.Second),
+	)
+	defer cancel()
+	require.False(t, modelCallBudgetDeadlineSoon(ctx, 0))
+	require.True(t, modelCallBudgetDeadlineSoon(ctx, time.Minute))
+}
+
 func TestModelCallBudgetCallbacks_RunBeforeModel(t *testing.T) {
 	t.Parallel()
 
@@ -244,6 +262,19 @@ func TestAppendModelCallBudgetGatewayOption_AddsDeadlineBudget(
 
 	opts := appendModelCallBudgetGatewayOption(nil, 0, false, time.Minute)
 	require.Len(t, opts, 1)
+}
+
+func TestModelCallBudgetRunOptions(t *testing.T) {
+	t.Parallel()
+
+	require.Nil(t, modelCallBudgetRunOptions(0, false, 0))
+
+	runOpts := modelCallBudgetRunOptions(0, false, time.Minute)
+	require.Len(t, runOpts, 1)
+	opts := agent.NewRunOptions(runOpts...)
+	factory, ok := opts.RuntimeState[modelCallBudgetRuntimeStateKey].(*modelCallBudgetFactory)
+	require.True(t, ok)
+	require.Equal(t, time.Minute, factory.deadlineWindow)
 }
 
 func TestModelCallBudgetModel_FinalizesOnLastAllowedCall(t *testing.T) {
@@ -767,4 +798,20 @@ func TestBuildModelCallBudgetRunOptionResolverInjectsDeadlineBudget(
 		got.Messages[1].Content,
 		"final allowed model call",
 	)
+}
+
+func TestModelCallBudgetFactoryReusesDeadlineBudgetForInvocation(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	factory := newModelCallBudgetFactory(0, false, time.Minute)
+	inv := agent.NewInvocation(agent.WithInvocationID("deadline-run"))
+
+	first := factory.budgetFor(inv)
+	second := factory.budgetFor(inv)
+
+	require.NotNil(t, first)
+	require.Same(t, first, second)
+	require.Equal(t, time.Minute, first.deadlineWindow)
 }

@@ -811,6 +811,10 @@ type Runtime struct {
 	evolutionService  evolution.Service
 	toolSets          []tool.ToolSet
 	telemetryShutdown func(context.Context) error
+
+	modelCallBudgetLimit          int
+	modelCallBudgetFinalizeOnLast bool
+	modelCallBudgetDeadlineWindow time.Duration
 }
 
 // Gateway provides the HTTP handler and routes served by OpenClaw.
@@ -1312,6 +1316,9 @@ func NewRuntimeWithOptions(
 		prompts.Instruction,
 		prompts.SystemPrompt,
 	)
+	rt.modelCallBudgetLimit = opts.MaxLLMCalls
+	rt.modelCallBudgetFinalizeOnLast = opts.FinalizeBeforeMaxLLMCalls
+	rt.modelCallBudgetDeadlineWindow = opts.DeadlineFinalizationWindow
 	rt.toolSets = toolSets
 	rt.tools = runtimeTools
 	rt.skillsWatch = skillsWatch
@@ -1590,6 +1597,17 @@ func (r *Runtime) Run(
 ) (<-chan *event.Event, error) {
 	if r == nil || r.runner == nil {
 		return nil, errors.New("openclaw runtime runner is not configured")
+	}
+	defaultRunOpts := modelCallBudgetRunOptions(
+		r.modelCallBudgetLimit,
+		r.modelCallBudgetFinalizeOnLast,
+		r.modelCallBudgetDeadlineWindow,
+	)
+	if len(defaultRunOpts) > 0 {
+		merged := make([]agent.RunOption, 0, len(defaultRunOpts)+len(runOpts))
+		merged = append(merged, defaultRunOpts...)
+		merged = append(merged, runOpts...)
+		runOpts = merged
 	}
 	return r.runner.Run(ctx, userID, sessionID, message, runOpts...)
 }
