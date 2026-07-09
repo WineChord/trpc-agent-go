@@ -2629,6 +2629,35 @@ func TestToolCall_ActBackfillsTopLevelKindIntoNestedRequest(t *testing.T) {
 	require.Equal(t, "Home", drv.calls[0].Args["key"])
 }
 
+func TestNormalizeActRequestPreservesExplicitNestedValues(t *testing.T) {
+	t.Parallel()
+
+	got := normalizeActRequest(input{
+		Kind:      actType,
+		Text:      "fallback",
+		Modifiers: []string{"Shift"},
+		Values:    []string{"fallback"},
+		Fields: []map[string]any{
+			{"target": "fallback", "text": "fallback"},
+		},
+		Request: &actRequest{
+			Kind:      actType,
+			Text:      " ",
+			Modifiers: []string{},
+			Values:    []string{},
+			Fields:    []map[string]any{},
+		},
+	})
+
+	require.Equal(t, " ", got.Text)
+	require.Empty(t, got.Modifiers)
+	require.NotNil(t, got.Modifiers)
+	require.Empty(t, got.Values)
+	require.NotNil(t, got.Values)
+	require.Empty(t, got.Fields)
+	require.NotNil(t, got.Fields)
+}
+
 func TestToolCall_ActPassesTimeoutToBrowserServer(t *testing.T) {
 	t.Parallel()
 
