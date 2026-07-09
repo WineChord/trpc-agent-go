@@ -214,6 +214,72 @@ test("HostProfile act accepts press/key as a press alias", async () => {
   assert.equal(result.content[0].text, "Pressed End.");
 });
 
+test("HostProfile act clicks a CSS element target", async () => {
+  const calls = [];
+  const locator = {
+    first() {
+      calls.push({ first: true });
+      return locator;
+    },
+    async click(options) {
+      calls.push({ click: options });
+    }
+  };
+  const page = {
+    locator(selector) {
+      calls.push({ selector });
+      return locator;
+    }
+  };
+
+  const profile = profileForPage(page);
+  const result = await profile.act("tab-1", {
+    kind: "click",
+    element: "#download",
+    timeoutMs: 1234
+  });
+
+  assert.equal(calls[0].selector, "#download");
+  assert.deepEqual(calls[1], { first: true });
+  assert.equal(calls[2].click.timeout, 1234);
+  assert.equal(result.content[0].text, "Clicked #download.");
+});
+
+test("HostProfile act clicks a visible text button target", async () => {
+  const calls = [];
+  const locator = {
+    first() {
+      calls.push({ first: true });
+      return locator;
+    },
+    async click(options) {
+      calls.push({ click: options });
+    }
+  };
+  const page = {
+    getByRole(role, options) {
+      calls.push({ role, options });
+      return locator;
+    }
+  };
+
+  const profile = profileForPage(page);
+  const result = await profile.act("tab-1", {
+    kind: "click",
+    target: "button that says Download or Export"
+  });
+
+  assert.equal(calls[0].role, "button");
+  assert.match("Download", calls[0].options.name);
+  assert.match("Export", calls[0].options.name);
+  assert.deepEqual(calls[1], { first: true });
+  assert.equal(calls[2].click.timeout, 30000);
+  assert.equal(
+    result.content[0].text,
+    "Clicked button that says Download or Export."
+  );
+});
+
 test("HostProfile download clicks a ref and saves the file", async () => {
   const calls = [];
   const download = {
