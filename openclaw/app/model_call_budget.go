@@ -323,18 +323,31 @@ func buildModelCallBudgetRunOptionResolver(
 		[]agent.RunOption,
 		error,
 	) {
-		factory := newModelCallBudgetFactory(
+		return ctx, modelCallBudgetRunOptions(
 			limit,
 			finalizeOnLast,
 			deadlineWindow,
-		)
-		return ctx,
-			[]agent.RunOption{
-				agent.MergeRuntimeState(map[string]any{
-					modelCallBudgetRuntimeStateKey: factory,
-				}),
-			},
-			nil
+		), nil
+	}
+}
+
+func modelCallBudgetRunOptions(
+	limit int,
+	finalizeOnLast bool,
+	deadlineWindow time.Duration,
+) []agent.RunOption {
+	factory := newModelCallBudgetFactory(
+		limit,
+		finalizeOnLast,
+		deadlineWindow,
+	)
+	if factory == nil {
+		return nil
+	}
+	return []agent.RunOption{
+		agent.MergeRuntimeState(map[string]any{
+			modelCallBudgetRuntimeStateKey: factory,
+		}),
 	}
 }
 
