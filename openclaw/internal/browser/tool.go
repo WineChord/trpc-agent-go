@@ -2342,10 +2342,10 @@ func normalizeActRequest(in input) actRequest {
 		if strings.TrimSpace(req.Button) == "" {
 			req.Button = in.Button
 		}
-		if len(req.Modifiers) == 0 {
+		if req.Modifiers == nil {
 			req.Modifiers = in.Modifiers
 		}
-		if strings.TrimSpace(req.Text) == "" {
+		if req.Text == "" {
 			req.Text = in.Text
 		}
 		if req.Submit == nil {
@@ -2372,10 +2372,10 @@ func normalizeActRequest(in input) actRequest {
 		if strings.TrimSpace(req.EndRef) == "" {
 			req.EndRef = in.EndRef
 		}
-		if len(req.Values) == 0 {
+		if req.Values == nil {
 			req.Values = in.Values
 		}
-		if len(req.Fields) == 0 {
+		if req.Fields == nil {
 			req.Fields = in.Fields
 		}
 		if req.Width == nil {
