@@ -1646,6 +1646,50 @@ func TestRuntimeGatewayRunOptionsEdgeCases(t *testing.T) {
 	require.Nil(t, input.Extensions)
 }
 
+func TestRuntimeRunAddsModelCallBudgetOptions(t *testing.T) {
+	t.Parallel()
+
+	const instruction = "caller"
+
+	runner := &capturingRuntimeRunOptionRunner{reply: "ok"}
+	rt := &Runtime{
+		runner:                        runner,
+		modelCallBudgetDeadlineWindow: time.Minute,
+	}
+	_, err := rt.Run(
+		context.Background(),
+		"u1",
+		"s1",
+		model.NewUserMessage("hello"),
+		agent.WithInstruction(instruction),
+	)
+	require.NoError(t, err)
+	require.Equal(t, instruction, runner.opts.Instruction)
+
+	factory, ok := runner.opts.RuntimeState[modelCallBudgetRuntimeStateKey].(*modelCallBudgetFactory)
+	require.True(t, ok)
+	require.Equal(t, time.Minute, factory.deadlineWindow)
+}
+
+func TestRuntimeRunWithoutModelCallBudgetPreservesOptions(t *testing.T) {
+	t.Parallel()
+
+	const instruction = "caller"
+
+	runner := &capturingRuntimeRunOptionRunner{reply: "ok"}
+	rt := &Runtime{runner: runner}
+	_, err := rt.Run(
+		context.Background(),
+		"u1",
+		"s1",
+		model.NewUserMessage("hello"),
+		agent.WithInstruction(instruction),
+	)
+	require.NoError(t, err)
+	require.Equal(t, instruction, runner.opts.Instruction)
+	require.Empty(t, runner.opts.RuntimeState)
+}
+
 func TestToolCallArgumentsJSONRepairRunOptionResolver(t *testing.T) {
 	t.Parallel()
 
@@ -4214,6 +4258,14 @@ func TestValidateAgentRunOptions(t *testing.T) {
 			agentType: agentTypeClaudeCode,
 			opts: runOptions{
 				MaxHistoryRuns: 1,
+			},
+			wantErr: true,
+		},
+		{
+			name:      "deadline-finalization-window",
+			agentType: agentTypeClaudeCode,
+			opts: runOptions{
+				DeadlineFinalizationWindow: time.Minute,
 			},
 			wantErr: true,
 		},
