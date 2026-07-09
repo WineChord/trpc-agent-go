@@ -1219,8 +1219,10 @@ func NewRuntimeWithOptions(
 			EnableContextCompaction: opts.EnableContextCompaction,
 			ContextCompactionOversizedToolResultMaxTokens: opts.
 				ContextCompactionOversizedToolResultMaxTokens,
-			MaxHistoryRuns:        opts.MaxHistoryRuns,
-			MaxLLMCalls:           opts.MaxLLMCalls,
+			MaxHistoryRuns: opts.MaxHistoryRuns,
+			MaxLLMCalls:    opts.MaxLLMCalls,
+			DeadlineFinalizationWindow: opts.
+				DeadlineFinalizationWindow,
 			MaxToolIterations:     opts.MaxToolIterations,
 			PreloadMemory:         opts.PreloadMemory,
 			GenerationConfig:      opts.GenerationConfig,
@@ -1382,6 +1384,7 @@ func NewRuntimeWithOptions(
 		gwOpts,
 		opts.MaxLLMCalls,
 		opts.FinalizeBeforeMaxLLMCalls,
+		opts.DeadlineFinalizationWindow,
 	)
 	if langfuseRT != nil && langfuseRT.runOptionResolver != nil {
 		gwOpts = append(
@@ -1856,8 +1859,10 @@ func run(
 			EnableContextCompaction: opts.EnableContextCompaction,
 			ContextCompactionOversizedToolResultMaxTokens: opts.
 				ContextCompactionOversizedToolResultMaxTokens,
-			MaxHistoryRuns:        opts.MaxHistoryRuns,
-			MaxLLMCalls:           opts.MaxLLMCalls,
+			MaxHistoryRuns: opts.MaxHistoryRuns,
+			MaxLLMCalls:    opts.MaxLLMCalls,
+			DeadlineFinalizationWindow: opts.
+				DeadlineFinalizationWindow,
 			MaxToolIterations:     opts.MaxToolIterations,
 			PreloadMemory:         opts.PreloadMemory,
 			GenerationConfig:      opts.GenerationConfig,
@@ -2013,6 +2018,7 @@ func run(
 		gwOpts,
 		opts.MaxLLMCalls,
 		opts.FinalizeBeforeMaxLLMCalls,
+		opts.DeadlineFinalizationWindow,
 	)
 	if langfuseRT != nil && langfuseRT.runOptionResolver != nil {
 		gwOpts = append(
@@ -2609,6 +2615,11 @@ func validateAgentRunOptions(agentType string, opts runOptions) error {
 	if opts.MaxLLMCalls != 0 {
 		return errors.New(
 			"claude-code agent does not support max-llm-calls",
+		)
+	}
+	if opts.DeadlineFinalizationWindow != 0 {
+		return errors.New(
+			"claude-code agent does not support deadline-finalization-window",
 		)
 	}
 	if opts.PreloadMemory != 0 {
@@ -3388,6 +3399,7 @@ type agentConfig struct {
 	ContextCompactionOversizedToolResultMaxTokens int
 	MaxHistoryRuns                                int
 	MaxLLMCalls                                   int
+	DeadlineFinalizationWindow                    time.Duration
 	MaxToolIterations                             int
 	PreloadMemory                                 int
 	GenerationConfig                              *model.GenerationConfig
