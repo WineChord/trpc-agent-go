@@ -1379,6 +1379,7 @@ func NewRuntimeWithOptions(
 		gwOpts,
 		opts.MaxLLMCalls,
 		opts.FinalizeBeforeMaxLLMCalls,
+		opts.DeadlineFinalizationWindow,
 	)
 	if langfuseRT != nil && langfuseRT.runOptionResolver != nil {
 		gwOpts = append(
@@ -2021,6 +2022,7 @@ func run(
 		gwOpts,
 		opts.MaxLLMCalls,
 		opts.FinalizeBeforeMaxLLMCalls,
+		opts.DeadlineFinalizationWindow,
 	)
 	if langfuseRT != nil && langfuseRT.runOptionResolver != nil {
 		gwOpts = append(
