@@ -2320,6 +2320,9 @@ func (t *Tool) handleAct(
 func normalizeActRequest(in input) actRequest {
 	if in.Request != nil {
 		req := *in.Request
+		if strings.TrimSpace(req.Kind) == "" {
+			req.Kind = in.Kind
+		}
 		if strings.TrimSpace(req.TargetID) == "" {
 			req.TargetID = in.TargetID
 		}
@@ -2328,6 +2331,30 @@ func normalizeActRequest(in input) actRequest {
 		}
 		if strings.TrimSpace(req.Ref) == "" {
 			req.Ref = in.Ref
+		}
+		if req.DoubleClick == nil {
+			req.DoubleClick = in.DoubleClick
+		}
+		if strings.TrimSpace(req.Button) == "" {
+			req.Button = in.Button
+		}
+		if req.Modifiers == nil {
+			req.Modifiers = in.Modifiers
+		}
+		if req.Text == "" {
+			req.Text = in.Text
+		}
+		if req.Submit == nil {
+			req.Submit = in.Submit
+		}
+		if req.Slowly == nil {
+			req.Slowly = in.Slowly
+		}
+		if strings.TrimSpace(req.Key) == "" {
+			req.Key = in.Key
+		}
+		if req.DelayMs == nil {
+			req.DelayMs = in.DelayMs
 		}
 		if strings.TrimSpace(req.StartTarget) == "" {
 			req.StartTarget = in.StartTarget
@@ -2340,6 +2367,24 @@ func normalizeActRequest(in input) actRequest {
 		}
 		if strings.TrimSpace(req.EndRef) == "" {
 			req.EndRef = in.EndRef
+		}
+		if req.Values == nil {
+			req.Values = in.Values
+		}
+		if req.Fields == nil {
+			req.Fields = in.Fields
+		}
+		if req.Width == nil {
+			req.Width = in.Width
+		}
+		if req.Height == nil {
+			req.Height = in.Height
+		}
+		if req.TimeMs == nil {
+			req.TimeMs = in.TimeMs
+		}
+		if strings.TrimSpace(req.Selector) == "" {
+			req.Selector = in.Selector
 		}
 		if strings.TrimSpace(req.URL) == "" {
 			req.URL = browserURL(in.URL, in.TargetURL)

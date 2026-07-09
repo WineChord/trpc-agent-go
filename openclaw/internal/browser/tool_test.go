@@ -2356,6 +2356,63 @@ func TestNormalizeActRequestBackfillsNestedDragRefs(t *testing.T) {
 	require.Equal(t, "destination-ref", got.EndRef)
 }
 
+func TestToolCall_ActBackfillsTopLevelKindIntoNestedRequest(t *testing.T) {
+	t.Parallel()
+
+	drv := &fakeDriver{
+		callResult: map[string]any{
+			mcpToolPressKey: textPayload("pressed"),
+		},
+	}
+
+	raw, err := newTestTool(drv).Call(
+		context.Background(),
+		mustJSON(t, map[string]any{
+			"action": actionAct,
+			"kind":   actPress,
+			"request": map[string]any{
+				"key": "Home",
+			},
+		}),
+	)
+	require.NoError(t, err)
+
+	got := raw.(Result)
+	require.Equal(t, actionAct, got.Action)
+	require.Len(t, drv.calls, 1)
+	require.Equal(t, mcpToolPressKey, drv.calls[0].Tool)
+	require.Equal(t, "Home", drv.calls[0].Args["key"])
+}
+
+func TestNormalizeActRequestPreservesExplicitNestedValues(t *testing.T) {
+	t.Parallel()
+
+	got := normalizeActRequest(input{
+		Kind:      actType,
+		Text:      "fallback",
+		Modifiers: []string{"Shift"},
+		Values:    []string{"fallback"},
+		Fields: []map[string]any{
+			{"target": "fallback", "text": "fallback"},
+		},
+		Request: &actRequest{
+			Kind:      actType,
+			Text:      " ",
+			Modifiers: []string{},
+			Values:    []string{},
+			Fields:    []map[string]any{},
+		},
+	})
+
+	require.Equal(t, " ", got.Text)
+	require.Empty(t, got.Modifiers)
+	require.NotNil(t, got.Modifiers)
+	require.Empty(t, got.Values)
+	require.NotNil(t, got.Values)
+	require.Empty(t, got.Fields)
+	require.NotNil(t, got.Fields)
+}
+
 func TestToolCall_ActPassesTimeoutToBrowserServer(t *testing.T) {
 	t.Parallel()
 
