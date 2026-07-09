@@ -13,7 +13,10 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/searchresult"
 )
 
 const (
@@ -28,6 +31,13 @@ const (
 		"host package managers is not allowed in chat; do not retry " +
 		"host package manager commands, and use existing tools or " +
 		"user-space dependencies instead"
+	reasonSearchResultHTTP = "scraping %s result pages with " +
+		"command-line HTTP clients is not allowed in chat; use " +
+		"dedicated search tools, direct source URLs, archives, or " +
+		"existing evidence instead"
+	reasonNetworkProxy = "routing command traffic through ad hoc " +
+		"proxies or tunnels is not allowed in chat; use the " +
+		"configured network path or built-in web tools instead"
 
 	sensitivePathBoundaryChars = " \t\r\n\"'`=:/\\|&;()[]{}<>"
 
@@ -39,6 +49,8 @@ const (
 
 	shellQuoteChars = `"'`
 )
+
+var httpURLPattern = regexp.MustCompile("https?://[^\\s\"'`<>\\\\]+")
 
 var protectedPathFragments = []string{
 	".aws/credentials",
@@ -91,6 +103,18 @@ func NewChatCommandSafetyPolicy() CommandPolicy {
 				reasonSystemPackageInstall,
 			)
 		}
+		if source, ok := blocksSearchResultHTTP(req.Command); ok {
+			return fmt.Errorf(
+				errCommandPolicyRejected,
+				fmt.Sprintf(reasonSearchResultHTTP, source),
+			)
+		}
+		if blocksNetworkProxy(req.Command) {
+			return fmt.Errorf(
+				errCommandPolicyRejected,
+				reasonNetworkProxy,
+			)
+		}
 		return nil
 	}
 }
@@ -116,6 +140,214 @@ func blocksSensitivePath(command string) bool {
 
 func blocksSystemPackageInstall(command string) bool {
 	return blocksSystemPackageInstallDepth(normalizePolicyCommand(command), 0)
+}
+
+func blocksSearchResultHTTP(command string) (string, bool) {
+	command = normalizePolicyCommand(command)
+	if command == "" || !usesCommandLineHTTPClient(command, 0) {
+		return "", false
+	}
+	for _, raw := range httpURLPattern.FindAllString(command, -1) {
+		source, ok := searchresult.Match(trimShellURL(raw))
+		if ok {
+			return source, true
+		}
+	}
+	return "", false
+}
+
+func blocksNetworkProxy(command string) bool {
+	return blocksNetworkProxyDepth(normalizeProxyPolicyCommand(command), 0)
+}
+
+func blocksNetworkProxyDepth(command string, depth int) bool {
+	if command == "" || depth > 2 {
+		return false
+	}
+	for _, segment := range shellPolicySegments(command) {
+		words := shellPolicyWords(segment)
+		if blocksNetworkProxyWords(words) {
+			return true
+		}
+		for i := 0; i < len(words); i++ {
+			if !isShellExecutable(policyCommandName(words[i])) {
+				continue
+			}
+			cmdArg, ok := shellCommandStringArg(words[i+1:])
+			if ok && blocksNetworkProxyDepth(cmdArg, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func blocksNetworkProxyWords(words []string) bool {
+	for i, word := range words {
+		if isProxyEnvAssignmentInCommand(words, i) {
+			return true
+		}
+		cmd := strings.ToLower(policyCommandName(word))
+		switch cmd {
+		case "curl":
+			if curlArgsUseProxy(words[i+1:]) {
+				return true
+			}
+		case "wget":
+			if wgetArgsUseProxy(words[i+1:]) {
+				return true
+			}
+		case "proxychains", "proxychains4", "torsocks", "tsocks":
+			return true
+		case "ssh":
+			if sshArgsOpenTunnel(words[i+1:]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeProxyPolicyCommand(command string) string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return ""
+	}
+	return filepath.ToSlash(trimmed)
+}
+
+func isProxyEnvAssignmentInCommand(words []string, index int) bool {
+	if index < 0 || index >= len(words) ||
+		!isProxyEnvAssignment(words[index]) {
+		return false
+	}
+	if index == 0 {
+		return true
+	}
+	prev := policyCommandName(words[index-1])
+	if prev == "env" || prev == "export" {
+		return true
+	}
+	for i := 0; i < index; i++ {
+		if policyCommandName(words[i]) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isProxyEnvAssignment(word string) bool {
+	name, value, ok := strings.Cut(strings.Trim(word, shellQuoteChars), "=")
+	if !ok || strings.TrimSpace(value) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "http_proxy", "https_proxy", "all_proxy":
+		return true
+	default:
+		return false
+	}
+}
+
+func curlArgsUseProxy(words []string) bool {
+	for _, word := range words {
+		flag := strings.Trim(word, shellQuoteChars)
+		if flag == "-x" ||
+			strings.HasPrefix(flag, "-xhttp://") ||
+			strings.HasPrefix(flag, "-xhttps://") ||
+			strings.HasPrefix(flag, "-xsocks") ||
+			flag == "--proxy" ||
+			strings.HasPrefix(flag, "--proxy=") ||
+			flag == "--preproxy" ||
+			strings.HasPrefix(flag, "--preproxy=") ||
+			strings.HasPrefix(flag, "--socks4") ||
+			strings.HasPrefix(flag, "--socks5") {
+			return true
+		}
+	}
+	return false
+}
+
+func wgetArgsUseProxy(words []string) bool {
+	for i, word := range words {
+		flag := strings.Trim(word, shellQuoteChars)
+		if strings.HasPrefix(flag, "--proxy") ||
+			strings.Contains(strings.ToLower(flag), "_proxy=") {
+			return true
+		}
+		if flag == "-e" && i+1 < len(words) {
+			next := strings.ToLower(strings.Trim(words[i+1], shellQuoteChars))
+			if strings.Contains(next, "proxy") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sshArgsOpenTunnel(words []string) bool {
+	for _, word := range words {
+		flag := strings.Trim(word, shellQuoteChars)
+		if flag == "-D" || flag == "-L" || flag == "-R" ||
+			flag == "-W" ||
+			strings.HasPrefix(flag, "-D") ||
+			strings.HasPrefix(flag, "-L") ||
+			strings.HasPrefix(flag, "-R") ||
+			strings.HasPrefix(flag, "-W") {
+			return true
+		}
+	}
+	return false
+}
+
+func usesCommandLineHTTPClient(command string, depth int) bool {
+	if command == "" || depth > 2 {
+		return false
+	}
+	words := shellPolicyWords(command)
+	for i, word := range words {
+		cmd := policyCommandName(word)
+		switch cmd {
+		case "curl", "wget", "http", "https", "aria2c", "lynx", "w3m":
+			return true
+		case "python", "python3", "python2", "pypy", "pypy3":
+			if containsPythonHTTPClient(command) {
+				return true
+			}
+		case "node", "nodejs", "bun", "deno":
+			if containsJSHTTPClient(command) {
+				return true
+			}
+		}
+		if !isShellExecutable(cmd) {
+			continue
+		}
+		cmdArg, ok := shellCommandStringArg(words[i+1:])
+		if ok && usesCommandLineHTTPClient(cmdArg, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
+func trimShellURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), ".,;:)]}")
+}
+
+func containsPythonHTTPClient(command string) bool {
+	lower := strings.ToLower(command)
+	return strings.Contains(lower, "requests") ||
+		strings.Contains(lower, "urllib") ||
+		strings.Contains(lower, "http.client") ||
+		strings.Contains(lower, "urlopen")
+}
+
+func containsJSHTTPClient(command string) bool {
+	lower := strings.ToLower(command)
+	return strings.Contains(lower, "fetch(") ||
+		strings.Contains(lower, "axios") ||
+		strings.Contains(lower, "http.get") ||
+		strings.Contains(lower, "https.get")
 }
 
 func blocksSystemPackageInstallDepth(command string, depth int) bool {
@@ -162,6 +394,39 @@ func blocksSystemPackageInstallWords(words []string) bool {
 		}
 	}
 	return false
+}
+
+func shellPolicySegments(command string) []string {
+	segments := make([]string, 0, 2)
+	var b strings.Builder
+	var quote rune
+	flush := func() {
+		segment := strings.TrimSpace(b.String())
+		if segment != "" {
+			segments = append(segments, segment)
+		}
+		b.Reset()
+	}
+	for _, r := range command {
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			b.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '\'', '"', '`':
+			quote = r
+			b.WriteRune(r)
+		case ';', '|', '&', '\n':
+			flush()
+		default:
+			b.WriteRune(r)
+		}
+	}
+	flush()
+	return segments
 }
 
 func shellPolicyWords(command string) []string {
