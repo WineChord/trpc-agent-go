@@ -1593,6 +1593,7 @@ func (t *Tool) handleScreenshot(
 		t.evaluateEnabled,
 	)
 	result.TargetID = strings.TrimSpace(in.TargetID)
+	result.ScreenshotPath = filename
 	result.Content = raw
 	return result, nil
 }
