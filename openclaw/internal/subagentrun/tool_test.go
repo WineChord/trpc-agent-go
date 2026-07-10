@@ -147,6 +147,33 @@ func TestSpawnToolSyncAndReviewModesWait(t *testing.T) {
 	require.Equal(t, testParentAgentName, route.AgentName)
 }
 
+func TestSpawnToolSyncModeAllowsMissingDeliveryTarget(t *testing.T) {
+	t.Parallel()
+
+	runner := &captureRunner{reply: "sync result"}
+	svc, err := NewService(t.TempDir(), runner, nil)
+	require.NoError(t, err)
+	svc.Start(context.Background())
+	t.Cleanup(func() {
+		require.NoError(t, svc.Close())
+	})
+
+	tools := NewTools(svc)
+	ctx := newInvocationContext("admin", "admin-session", nil)
+
+	syncedAny, err := tools.spawn.Call(
+		ctx,
+		[]byte(`{"task":"review","mode":"sync"}`),
+	)
+	require.NoError(t, err)
+	synced := syncedAny.(*openclawsubagent.Run)
+	require.Equal(t, openclawsubagent.StatusCompleted, synced.Status)
+	require.Equal(t, "sync result", synced.Result)
+
+	_, err = tools.spawn.Call(ctx, []byte(`{"task":"review"}`))
+	require.ErrorIs(t, err, outbound.ErrTargetUnavailable)
+}
+
 func TestSpawnToolSyncWaitTimeoutReturnsLatestRun(t *testing.T) {
 	t.Parallel()
 
