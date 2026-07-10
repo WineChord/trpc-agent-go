@@ -569,7 +569,7 @@ func TestFinalModelCallRequest_TrimsSingleUserToolChain(t *testing.T) {
 	got := finalModelCallRequest(
 		req,
 		modelCallBudgetFinalRequestConfig{
-			MaxInputTokens:      1000,
+			MaxInputTokens:      1600,
 			ApproxRunesPerToken: 1,
 		},
 	)
