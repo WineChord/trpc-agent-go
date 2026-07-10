@@ -4702,10 +4702,13 @@ func TestModelCallBudgetFinalRequestFromOptions_DisablesThinking(
 		openai.VariantGLM,
 	} {
 		cfg := modelCallBudgetFinalRequestFromOptions(runOptions{
-			ModelMode:     modeOpenAI,
-			OpenAIVariant: string(variant),
+			ModelMode:                          modeOpenAI,
+			OpenAIVariant:                      string(variant),
+			DeadlineFinalizationMaxInputTokens: 1234,
 		})
 		require.True(t, cfg.DisableThinking, string(variant))
+		require.True(t, cfg.DropReasoningContent, string(variant))
+		require.Equal(t, 1234, cfg.MaxInputTokens)
 	}
 }
 
@@ -4726,6 +4729,11 @@ func TestModelCallBudgetFinalRequestFromOptions_DefaultUnaffected(
 		ModelMode:     modeOpenAI,
 		OpenAIVariant: "unsupported",
 	}).DisableThinking)
+	require.Equal(t, 4321, modelCallBudgetFinalRequestFromOptions(runOptions{
+		ModelMode:                          modeMock,
+		OpenAIVariant:                      string(openai.VariantGLM),
+		DeadlineFinalizationMaxInputTokens: 4321,
+	}).MaxInputTokens)
 }
 
 func TestModelCallBudgetFinalRequestFromOptions_AutoInfersThinking(
