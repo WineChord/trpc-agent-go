@@ -11,9 +11,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -26,27 +28,36 @@ type modelCallBudgetBypassKey struct{}
 
 const modelCallBudgetRuntimeStateKey = "openclaw.model_call_budget"
 
+type modelCallBudgetFinalRequestConfig struct {
+	DisableThinking      bool
+	DropReasoningContent bool
+	MaxInputTokens       int
+	ApproxRunesPerToken  float64
+}
+
 type modelCallBudget struct {
 	mu             sync.Mutex
 	limit          int
 	count          int
 	finalizeOnLast bool
+	deadlineWindow time.Duration
+	finalRequest   modelCallBudgetFinalRequestConfig
 }
 
 func newModelCallBudget(
 	limit int,
-	finalizeOnLast ...bool,
+	finalizeOnLast bool,
+	deadlineWindow time.Duration,
+	finalRequest ...modelCallBudgetFinalRequestConfig,
 ) *modelCallBudget {
-	if limit <= 0 {
+	if limit <= 0 && deadlineWindow <= 0 {
 		return nil
-	}
-	finalize := false
-	if len(finalizeOnLast) > 0 {
-		finalize = finalizeOnLast[0]
 	}
 	return &modelCallBudget{
 		limit:          limit,
-		finalizeOnLast: finalize,
+		finalizeOnLast: finalizeOnLast,
+		deadlineWindow: deadlineWindow,
+		finalRequest:   modelCallBudgetFinalRequestArg(finalRequest),
 	}
 }
 
@@ -54,24 +65,39 @@ type modelCallBudgetFactory struct {
 	mu             sync.Mutex
 	limit          int
 	finalizeOnLast bool
+	deadlineWindow time.Duration
+	finalRequest   modelCallBudgetFinalRequestConfig
 	budgets        map[string]*modelCallBudget
 }
 
 func newModelCallBudgetFactory(
 	limit int,
 	finalizeOnLast bool,
+	deadlineWindow time.Duration,
+	finalRequest ...modelCallBudgetFinalRequestConfig,
 ) *modelCallBudgetFactory {
-	if limit <= 0 {
+	if limit <= 0 && deadlineWindow <= 0 {
 		return nil
 	}
 	return &modelCallBudgetFactory{
 		limit:          limit,
 		finalizeOnLast: finalizeOnLast,
+		deadlineWindow: deadlineWindow,
+		finalRequest:   modelCallBudgetFinalRequestArg(finalRequest),
 	}
 }
 
+func modelCallBudgetFinalRequestArg(
+	finalRequest []modelCallBudgetFinalRequestConfig,
+) modelCallBudgetFinalRequestConfig {
+	if len(finalRequest) == 0 {
+		return modelCallBudgetFinalRequestConfig{}
+	}
+	return finalRequest[0]
+}
+
 func withModelCallBudget(ctx context.Context, limit int) context.Context {
-	return withModelCallBudgetValue(ctx, newModelCallBudget(limit))
+	return withModelCallBudgetValue(ctx, newModelCallBudget(limit, false, 0))
 }
 
 func withModelCallBudgetValue(
@@ -122,7 +148,8 @@ func modelCallBudgetFromContext(ctx context.Context) *modelCallBudget {
 func (f *modelCallBudgetFactory) budgetFor(
 	inv *agent.Invocation,
 ) *modelCallBudget {
-	if f == nil || inv == nil || f.limit <= 0 {
+	if f == nil || inv == nil ||
+		(f.limit <= 0 && f.deadlineWindow <= 0) {
 		return nil
 	}
 	key := modelCallBudgetInvocationKey(inv)
@@ -134,7 +161,12 @@ func (f *modelCallBudgetFactory) budgetFor(
 	if budget := f.budgets[key]; budget != nil {
 		return budget
 	}
-	budget := newModelCallBudget(f.limit, f.finalizeOnLast)
+	budget := newModelCallBudget(
+		f.limit,
+		f.finalizeOnLast,
+		f.deadlineWindow,
+		f.finalRequest,
+	)
 	f.budgets[key] = budget
 	return budget
 }
@@ -146,19 +178,113 @@ func modelCallBudgetInvocationKey(inv *agent.Invocation) string {
 	return fmt.Sprintf("%p", inv)
 }
 
-func (b *modelCallBudget) use() (bool, error) {
-	if b == nil || b.limit <= 0 {
+func (b *modelCallBudget) use(ctx context.Context) (bool, error) {
+	if b == nil || (b.limit <= 0 && b.deadlineWindow <= 0) {
 		return false, nil
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.count++
-	if b.count > b.limit {
-		return false, agent.NewStopError(
-			fmt.Sprintf("max LLM calls (%d) exceeded", b.limit),
-		)
+	if b.limit > 0 {
+		b.count++
+		if b.count > b.limit {
+			return false, agent.NewStopError(
+				fmt.Sprintf("max LLM calls (%d) exceeded", b.limit),
+			)
+		}
+		if b.finalizeOnLast && b.count == b.limit {
+			return true, nil
+		}
 	}
-	return b.finalizeOnLast && b.count == b.limit, nil
+	return modelCallBudgetDeadlineSoon(ctx, b.deadlineWindow), nil
+}
+
+func (b *modelCallBudget) finalConfig() modelCallBudgetFinalRequestConfig {
+	if b == nil {
+		return modelCallBudgetFinalRequestConfig{}
+	}
+	return b.finalRequest
+}
+
+func modelCallBudgetDeadlineSoon(
+	ctx context.Context,
+	window time.Duration,
+) bool {
+	if ctx == nil || window <= 0 {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return false
+	}
+	return time.Until(deadline) <= window
+}
+
+func modelCallBudgetPrefinalContext(
+	ctx context.Context,
+	window time.Duration,
+) (context.Context, context.CancelFunc, bool) {
+	if ctx == nil || window <= 0 {
+		return ctx, nil, false
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ctx, nil, false
+	}
+	prefinalDeadline := deadline.Add(-window)
+	if !time.Now().Before(prefinalDeadline) {
+		return ctx, nil, false
+	}
+	child, cancel := context.WithDeadline(ctx, prefinalDeadline)
+	return child, cancel, true
+}
+
+func modelCallBudgetPrefinalTimedOut(
+	prefinalCtx context.Context,
+	parentCtx context.Context,
+) bool {
+	if prefinalCtx == nil || parentCtx == nil {
+		return false
+	}
+	return errors.Is(prefinalCtx.Err(), context.DeadlineExceeded) &&
+		parentCtx.Err() == nil
+}
+
+func modelCallBudgetPrefinalTimeoutResponse(
+	resp *model.Response,
+	prefinalCtx context.Context,
+	parentCtx context.Context,
+) bool {
+	if resp == nil || resp.Error == nil {
+		return false
+	}
+	return modelCallBudgetPrefinalTimedOut(prefinalCtx, parentCtx) &&
+		strings.Contains(
+			strings.ToLower(resp.Error.Message),
+			context.DeadlineExceeded.Error(),
+		)
+}
+
+func modelCallBudgetTimeoutResponse(
+	resp *model.Response,
+	prefinalCtx context.Context,
+	parentCtx context.Context,
+	budget *modelCallBudget,
+) bool {
+	if modelCallBudgetPrefinalTimeoutResponse(
+		resp,
+		prefinalCtx,
+		parentCtx,
+	) {
+		return true
+	}
+	if budget == nil || budget.deadlineWindow <= 0 ||
+		parentCtx == nil || parentCtx.Err() != nil {
+		return false
+	}
+	if _, ok := parentCtx.Deadline(); !ok {
+		return false
+	}
+	return isModelTimeoutResponse(resp)
 }
 
 func newModelCallBudgetModel(m model.Model) model.Model {
@@ -208,14 +334,86 @@ func (m *modelCallBudgetModel) GenerateContent(
 	ctx context.Context,
 	req *model.Request,
 ) (<-chan *model.Response, error) {
-	finalize, err := modelCallBudgetFromContext(ctx).use()
+	budget := modelCallBudgetFromContext(ctx)
+	finalize, err := budget.use(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if finalize {
-		req = applyFinalModelCallRequest(req)
+		req = applyFinalModelCallRequest(req, budget.finalConfig())
+		return m.model.GenerateContent(ctx, req)
 	}
-	return m.model.GenerateContent(ctx, req)
+	if budget == nil {
+		return m.model.GenerateContent(ctx, req)
+	}
+	prefinalCtx, cancel, ok := modelCallBudgetPrefinalContext(
+		ctx,
+		budget.deadlineWindow,
+	)
+	if !ok {
+		return m.model.GenerateContent(ctx, req)
+	}
+	ch, err := m.model.GenerateContent(prefinalCtx, req)
+	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			req = applyFinalModelCallRequest(req, budget.finalConfig())
+			return m.model.GenerateContent(withoutModelCallBudget(ctx), req)
+		}
+		return nil, err
+	}
+	out := make(chan *model.Response, 1)
+	go func() {
+		defer close(out)
+		defer cancel()
+		timedOut := false
+		for resp := range ch {
+			if modelCallBudgetTimeoutResponse(
+				resp,
+				prefinalCtx,
+				ctx,
+				budget,
+			) {
+				timedOut = true
+				continue
+			}
+			select {
+			case out <- resp:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if modelCallBudgetPrefinalTimedOut(prefinalCtx, ctx) {
+			timedOut = true
+		}
+		if !timedOut || ctx.Err() != nil {
+			return
+		}
+		req = applyFinalModelCallRequest(req, budget.finalConfig())
+		finalCh, finalErr := m.model.GenerateContent(
+			withoutModelCallBudget(ctx),
+			req,
+		)
+		if finalErr != nil {
+			modelCallBudgetSendResponse(ctx, out, &model.Response{
+				Error: model.ResponseErrorFromError(
+					finalErr,
+					model.ErrorTypeFlowError,
+				),
+				Done:      true,
+				Timestamp: time.Now(),
+			})
+			return
+		}
+		for resp := range finalCh {
+			if !modelCallBudgetSendResponse(ctx, out, resp) {
+				return
+			}
+		}
+	}()
+	return out, nil
 }
 
 func (m *modelCallBudgetModel) Info() model.Info {
@@ -246,14 +444,88 @@ func (m *modelCallBudgetIterModel) GenerateContentIter(
 	ctx context.Context,
 	req *model.Request,
 ) (model.Seq[*model.Response], error) {
-	finalize, err := modelCallBudgetFromContext(ctx).use()
+	budget := modelCallBudgetFromContext(ctx)
+	finalize, err := budget.use(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if finalize {
-		req = applyFinalModelCallRequest(req)
+		req = applyFinalModelCallRequest(req, budget.finalConfig())
+		return m.iter.GenerateContentIter(ctx, req)
 	}
-	return m.iter.GenerateContentIter(ctx, req)
+	if budget == nil {
+		return m.iter.GenerateContentIter(ctx, req)
+	}
+	prefinalCtx, cancel, ok := modelCallBudgetPrefinalContext(
+		ctx,
+		budget.deadlineWindow,
+	)
+	if !ok {
+		return m.iter.GenerateContentIter(ctx, req)
+	}
+	seq, err := m.iter.GenerateContentIter(prefinalCtx, req)
+	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			req = applyFinalModelCallRequest(req, budget.finalConfig())
+			return m.iter.GenerateContentIter(withoutModelCallBudget(ctx), req)
+		}
+		return nil, err
+	}
+	return func(yield func(*model.Response) bool) {
+		defer cancel()
+		timedOut := false
+		seq(func(resp *model.Response) bool {
+			if modelCallBudgetTimeoutResponse(
+				resp,
+				prefinalCtx,
+				ctx,
+				budget,
+			) {
+				timedOut = true
+				return true
+			}
+			return yield(resp)
+		})
+		if modelCallBudgetPrefinalTimedOut(prefinalCtx, ctx) {
+			timedOut = true
+		}
+		if !timedOut || ctx.Err() != nil {
+			return
+		}
+		req = applyFinalModelCallRequest(req, budget.finalConfig())
+		finalSeq, finalErr := m.iter.GenerateContentIter(
+			withoutModelCallBudget(ctx),
+			req,
+		)
+		if finalErr != nil {
+			yield(&model.Response{
+				Error: model.ResponseErrorFromError(
+					finalErr,
+					model.ErrorTypeFlowError,
+				),
+				Done:      true,
+				Timestamp: time.Now(),
+			})
+			return
+		}
+		finalSeq(yield)
+	}, nil
+}
+
+func modelCallBudgetSendResponse(
+	ctx context.Context,
+	ch chan<- *model.Response,
+	resp *model.Response,
+) bool {
+	select {
+	case ch <- resp:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 type modelCallBudgetBypassIterModel struct {
@@ -272,59 +544,393 @@ func appendModelCallBudgetGatewayOption(
 	opts []gateway.Option,
 	limit int,
 	finalizeOnLast bool,
+	deadlineWindow time.Duration,
+	finalRequest ...modelCallBudgetFinalRequestConfig,
 ) []gateway.Option {
-	if limit <= 0 {
+	if limit <= 0 && deadlineWindow <= 0 {
 		return opts
 	}
 	return append(opts, gateway.WithRunOptionResolver(
-		buildModelCallBudgetRunOptionResolver(limit, finalizeOnLast),
+		buildModelCallBudgetRunOptionResolver(
+			limit,
+			finalizeOnLast,
+			deadlineWindow,
+			modelCallBudgetFinalRequestArg(finalRequest),
+		),
 	))
 }
 
 func buildModelCallBudgetRunOptionResolver(
 	limit int,
 	finalizeOnLast bool,
+	deadlineWindow time.Duration,
+	finalRequest ...modelCallBudgetFinalRequestConfig,
 ) gateway.RunOptionResolver {
+	config := modelCallBudgetFinalRequestArg(finalRequest)
 	return func(ctx context.Context, _ gateway.RunOptionInput) (
 		context.Context,
 		[]agent.RunOption,
 		error,
 	) {
-		factory := newModelCallBudgetFactory(limit, finalizeOnLast)
-		return ctx,
-			[]agent.RunOption{
-				agent.MergeRuntimeState(map[string]any{
-					modelCallBudgetRuntimeStateKey: factory,
-				}),
-			},
-			nil
+		return ctx, modelCallBudgetRunOptions(
+			limit,
+			finalizeOnLast,
+			deadlineWindow,
+			config,
+		), nil
 	}
 }
 
-func finalModelCallRequest(req *model.Request) *model.Request {
+func modelCallBudgetRunOptions(
+	limit int,
+	finalizeOnLast bool,
+	deadlineWindow time.Duration,
+	finalRequest ...modelCallBudgetFinalRequestConfig,
+) []agent.RunOption {
+	factory := newModelCallBudgetFactory(
+		limit,
+		finalizeOnLast,
+		deadlineWindow,
+		modelCallBudgetFinalRequestArg(finalRequest),
+	)
+	if factory == nil {
+		return nil
+	}
+	return []agent.RunOption{
+		agent.MergeRuntimeState(map[string]any{
+			modelCallBudgetRuntimeStateKey: factory,
+		}),
+	}
+}
+
+func finalModelCallRequest(
+	req *model.Request,
+	config modelCallBudgetFinalRequestConfig,
+) *model.Request {
 	if req == nil {
 		req = &model.Request{}
 	}
 	clone := *req
 	clone.Tools = nil
+	clone.Stream = false
 	clone.ExtraFields = finalModelCallExtraFields(req.ExtraFields)
-	clone.Messages = append([]model.Message(nil), req.Messages...)
+	if config.DisableThinking {
+		clone.ThinkingEnabled = model.BoolPtr(false)
+	}
+	clone.Messages = finalModelCallMessages(req.Messages, config)
+	clone.Messages = finalModelCallTrimMessages(clone.Messages, config)
 	clone.Messages = append(clone.Messages, model.NewUserMessage(
-		"[OpenClaw Budget Notice] This is the final allowed model call "+
-			"for this run. No further tools are available now. Use only "+
-			"the existing conversation and tool results, then produce "+
-			"the final user-facing answer immediately. Do not emit tool "+
-			"calls, function calls, JSON tool requests, XML-style tool "+
-			"markup such as <tool_call>, code blocks that ask to run "+
-			"tools, or descriptions of future tool use. Do not ask to "+
-			"continue. If the original task requires a final-answer "+
-			"format, follow it exactly.",
+		finalModelCallNotice,
 	))
 	return &clone
 }
 
-func applyFinalModelCallRequest(req *model.Request) *model.Request {
-	finalReq := finalModelCallRequest(req)
+func finalModelCallMessages(
+	messages []model.Message,
+	config modelCallBudgetFinalRequestConfig,
+) []model.Message {
+	clone := append([]model.Message(nil), messages...)
+	if !config.DropReasoningContent {
+		return clone
+	}
+	for i := range clone {
+		clone[i].ReasoningContent = ""
+		clone[i].ReasoningSignature = ""
+	}
+	return clone
+}
+
+const finalModelCallNotice = "[OpenClaw Budget Notice] This is the " +
+	"final allowed model call for this run. No further tools are available " +
+	"now. Use only the existing conversation and tool results, then " +
+	"produce the final user-facing answer immediately. Do not emit tool " +
+	"calls, function calls, JSON tool requests, XML-style tool markup such " +
+	"as <tool_call>, code blocks that ask to run tools, or descriptions of " +
+	"future tool use. Do not ask to continue. If the original task " +
+	"requires a final-answer format, follow it exactly."
+
+const (
+	finalModelCallSystemBudgetDivisor = 4
+	finalModelCallUserBudgetDivisor   = 2
+	finalModelCallTruncationNotice    = "\n\n" +
+		"[...truncated for deadline finalization...]\n\n"
+)
+
+func finalModelCallTrimMessages(
+	messages []model.Message,
+	config modelCallBudgetFinalRequestConfig,
+) []model.Message {
+	maxInputTokens := config.MaxInputTokens
+	if maxInputTokens <= 0 || len(messages) == 0 {
+		return messages
+	}
+	ctx := context.Background()
+	counter := finalModelCallTokenCounter(config)
+	budget := finalModelCallTrimBudget(ctx, counter, maxInputTokens)
+	if budget <= 0 {
+		return messages
+	}
+	trimmed, err := model.NewMiddleOutStrategy(counter).TailorMessages(
+		ctx,
+		messages,
+		budget,
+	)
+	if err == nil && finalModelCallFits(ctx, counter, trimmed, budget) {
+		return trimmed
+	}
+	if finalModelCallFits(ctx, counter, trimmed, budget) {
+		return trimmed
+	}
+	fallback := finalModelCallTailEvidenceMessages(
+		ctx,
+		counter,
+		messages,
+		budget,
+	)
+	if len(fallback) > 0 {
+		return fallback
+	}
+	if len(trimmed) > 0 {
+		return trimmed
+	}
+	return messages
+}
+
+func finalModelCallTokenCounter(
+	config modelCallBudgetFinalRequestConfig,
+) model.TokenCounter {
+	counterOpts := []model.SimpleTokenCounterOption(nil)
+	if config.ApproxRunesPerToken > 0 {
+		counterOpts = append(
+			counterOpts,
+			model.WithApproxRunesPerToken(config.ApproxRunesPerToken),
+		)
+	}
+	return model.NewSimpleTokenCounter(counterOpts...)
+}
+
+func finalModelCallTrimBudget(
+	ctx context.Context,
+	counter model.TokenCounter,
+	maxInputTokens int,
+) int {
+	if maxInputTokens <= 0 {
+		return maxInputTokens
+	}
+	noticeTokens, err := counter.CountTokens(
+		ctx,
+		model.NewUserMessage(finalModelCallNotice),
+	)
+	if err != nil || noticeTokens <= 0 {
+		return maxInputTokens
+	}
+	budget := maxInputTokens - noticeTokens
+	if budget <= 0 {
+		return maxInputTokens
+	}
+	return budget
+}
+
+func finalModelCallFits(
+	ctx context.Context,
+	counter model.TokenCounter,
+	messages []model.Message,
+	maxTokens int,
+) bool {
+	if len(messages) == 0 || maxTokens <= 0 {
+		return false
+	}
+	tokens, err := counter.CountTokensRange(ctx, messages, 0, len(messages))
+	return err == nil && tokens <= maxTokens
+}
+
+func finalModelCallTailEvidenceMessages(
+	ctx context.Context,
+	counter model.TokenCounter,
+	messages []model.Message,
+	maxTokens int,
+) []model.Message {
+	headCount := finalModelCallSystemPrefixLen(messages)
+	anchor := finalModelCallAnchorUserIndex(messages, headCount)
+	if anchor < 0 {
+		return nil
+	}
+	transcript := finalModelCallTranscriptMessages(messages)
+	prefix := finalModelCallProtectedPrefix(
+		ctx,
+		counter,
+		transcript[:headCount],
+		transcript[anchor],
+		maxTokens,
+	)
+	best := prefix
+	if !finalModelCallFits(ctx, counter, best, maxTokens) {
+		return best
+	}
+	for start := len(transcript) - 1; start > anchor; start-- {
+		suffix := finalModelCallNormalizeTail(transcript[start:])
+		if len(suffix) == 0 {
+			continue
+		}
+		candidate := make([]model.Message, 0, len(prefix)+len(suffix))
+		candidate = append(candidate, prefix...)
+		candidate = append(candidate, suffix...)
+		if finalModelCallFits(ctx, counter, candidate, maxTokens) {
+			best = candidate
+			continue
+		}
+		if len(best) > len(prefix) {
+			break
+		}
+	}
+	return best
+}
+
+func finalModelCallTranscriptMessages(
+	messages []model.Message,
+) []model.Message {
+	transcript := make([]model.Message, len(messages))
+	for i, msg := range messages {
+		msg.ToolCalls = nil
+		if msg.Role == model.RoleTool {
+			msg.Role = model.RoleUser
+			msg.Content = finalModelCallToolResultText(msg)
+			msg.ToolID = ""
+			msg.ToolName = ""
+		}
+		transcript[i] = msg
+	}
+	return transcript
+}
+
+func finalModelCallToolResultText(msg model.Message) string {
+	name := strings.TrimSpace(msg.ToolName)
+	if name == "" {
+		name = "tool"
+	}
+	content := strings.TrimSpace(msg.Content)
+	if content == "" {
+		return "[Tool result: " + name + "]"
+	}
+	return "[Tool result: " + name + "]\n" + content
+}
+
+func finalModelCallSystemPrefixLen(messages []model.Message) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Role != model.RoleSystem {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+func finalModelCallAnchorUserIndex(
+	messages []model.Message,
+	start int,
+) int {
+	if start < 0 {
+		start = 0
+	}
+	for i := len(messages) - 1; i >= start; i-- {
+		if messages[i].Role == model.RoleUser {
+			return i
+		}
+	}
+	for i := len(messages) - 1; i >= start; i-- {
+		if messages[i].Role != model.RoleSystem {
+			return i
+		}
+	}
+	return -1
+}
+
+func finalModelCallProtectedPrefix(
+	ctx context.Context,
+	counter model.TokenCounter,
+	system []model.Message,
+	anchor model.Message,
+	maxTokens int,
+) []model.Message {
+	prefix := make([]model.Message, 0, len(system)+1)
+	systemLimit := finalModelCallPartRuneLimit(
+		maxTokens,
+		finalModelCallSystemBudgetDivisor*max(len(system), 1),
+	)
+	for _, msg := range system {
+		msg.Content = finalModelCallTrimContent(msg.Content, systemLimit)
+		prefix = append(prefix, msg)
+	}
+	anchorLimit := finalModelCallPartRuneLimit(
+		maxTokens,
+		finalModelCallUserBudgetDivisor,
+	)
+	anchor.Content = finalModelCallTrimContent(anchor.Content, anchorLimit)
+	prefix = append(prefix, anchor)
+	if finalModelCallFits(ctx, counter, prefix, maxTokens) {
+		return prefix
+	}
+	for i := range prefix {
+		prefix[i].Content = finalModelCallTrimContent(
+			prefix[i].Content,
+			finalModelCallPartRuneLimit(maxTokens, len(prefix)*2),
+		)
+	}
+	return prefix
+}
+
+func finalModelCallPartRuneLimit(maxTokens, divisor int) int {
+	if maxTokens <= 0 {
+		return 0
+	}
+	if divisor <= 0 {
+		return maxTokens
+	}
+	limit := maxTokens / divisor
+	if limit < 1 {
+		return 1
+	}
+	return limit
+}
+
+func finalModelCallTrimContent(content string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(content)
+	if len(runes) <= limit {
+		return content
+	}
+	notice := []rune(finalModelCallTruncationNotice)
+	if limit <= len(notice)+2 {
+		return string(runes[:limit])
+	}
+	bodyLimit := limit - len(notice)
+	head := bodyLimit / 2
+	tail := bodyLimit - head
+	return string(runes[:head]) +
+		finalModelCallTruncationNotice +
+		string(runes[len(runes)-tail:])
+}
+
+func finalModelCallNormalizeTail(
+	messages []model.Message,
+) []model.Message {
+	for len(messages) > 0 && messages[0].Role == model.RoleTool {
+		messages = messages[1:]
+	}
+	return messages
+}
+
+func applyFinalModelCallRequest(
+	req *model.Request,
+	finalRequest ...modelCallBudgetFinalRequestConfig,
+) *model.Request {
+	finalReq := finalModelCallRequest(
+		req,
+		modelCallBudgetFinalRequestArg(finalRequest),
+	)
 	if req == nil {
 		return finalReq
 	}
