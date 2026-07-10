@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"trpc.group/trpc-go/trpc-agent-go/knowledge/document"
 	"trpc.group/trpc-go/trpc-agent-go/tool/arxivsearch/internal/arxiv"
 )
 
@@ -492,6 +493,46 @@ func TestWithTimeout_EnforcedAtCallPath(t *testing.T) {
 	assert.Equal(t, 30*time.Second, original.Timeout, "original client must remain unmutated")
 	assert.Equal(t, http.RoundTripper(blockingRoundTripper{}), original.Transport,
 		"original transport must remain unmutated")
+}
+
+func TestNormalizedMaxContentRunes(t *testing.T) {
+	assert.Equal(t, defaultArticleContentRunes, normalizedMaxContentRunes(0))
+	assert.Equal(t, defaultArticleContentRunes, normalizedMaxContentRunes(-1))
+	assert.Equal(t, 123, normalizedMaxContentRunes(123))
+	assert.Equal(t, maxArticleContentRunes,
+		normalizedMaxContentRunes(maxArticleContentRunes+1))
+}
+
+func TestAppendArticleContentAppliesRuneBudget(t *testing.T) {
+	var got article
+	appendArticleContent(&got, []*document.Document{
+		{Content: "alpha"},
+		{Content: "βγδε"},
+		{Content: "tail"},
+	}, 7)
+
+	require.Len(t, got.Content, 2)
+	assert.Equal(t, "alpha", got.Content[0].Text)
+	assert.False(t, got.Content[0].Truncated)
+	assert.Equal(t, "βγ", got.Content[1].Text)
+	assert.True(t, got.Content[1].Truncated)
+	assert.True(t, got.ContentTruncated)
+	assert.Equal(t, 13, got.ContentRunes)
+	assert.Equal(t, 7, got.ReturnedContentRunes)
+}
+
+func TestAppendArticleContentKeepsShortDocuments(t *testing.T) {
+	var got article
+	appendArticleContent(&got, []*document.Document{
+		{Content: "Hello World"},
+	}, defaultArticleContentRunes)
+
+	require.Len(t, got.Content, 1)
+	assert.Equal(t, "Hello World", got.Content[0].Text)
+	assert.False(t, got.Content[0].Truncated)
+	assert.False(t, got.ContentTruncated)
+	assert.Equal(t, 11, got.ContentRunes)
+	assert.Equal(t, 11, got.ReturnedContentRunes)
 }
 
 // TestNewTool tests the NewToolSet function
