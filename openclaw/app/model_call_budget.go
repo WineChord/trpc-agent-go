@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -668,8 +669,9 @@ const finalModelCallNotice = "[OpenClaw Budget Notice] This is the " +
 
 const (
 	finalModelCallSystemBudgetDivisor = 16
-	finalModelCallUserBudgetDivisor   = 4
+	finalModelCallUserBudgetDivisor   = 2
 	finalModelCallTruncationNotice    = "\n\n[...truncated...]\n\n"
+	finalModelCallFormatSnippetLimit  = 700
 )
 
 func finalModelCallTrimMessages(
@@ -911,6 +913,24 @@ func finalModelCallPartRuneLimit(maxTokens, divisor int) int {
 }
 
 func finalModelCallTrimContent(content string, limit int) string {
+	trimmed := finalModelCallTrimContentPlain(content, limit)
+	snippet := finalModelCallAnswerFormatSnippet(content)
+	if snippet == "" || strings.Contains(trimmed, snippet) {
+		return trimmed
+	}
+	block := "\n\n" + snippet
+	blockRunes := []rune(block)
+	if len(blockRunes) >= limit {
+		return string(blockRunes[:limit])
+	}
+	body := finalModelCallTrimContentPlain(
+		content,
+		limit-len(blockRunes),
+	)
+	return body + block
+}
+
+func finalModelCallTrimContentPlain(content string, limit int) string {
 	if limit <= 0 {
 		return ""
 	}
@@ -928,6 +948,107 @@ func finalModelCallTrimContent(content string, limit int) string {
 	return string(runes[:head]) +
 		finalModelCallTruncationNotice +
 		string(runes[len(runes)-tail:])
+}
+
+func finalModelCallAnswerFormatSnippet(content string) string {
+	lower := strings.ToLower(content)
+	index := finalModelCallAnswerFormatIndex(lower)
+	if index < 0 {
+		return ""
+	}
+	start := finalModelCallParagraphStart(content, index)
+	end := finalModelCallParagraphEnd(content, index)
+	snippet := strings.TrimSpace(content[start:end])
+	if snippet == "" {
+		return ""
+	}
+	return finalModelCallLimitSnippet(
+		snippet,
+		index-start,
+		finalModelCallFormatSnippetLimit,
+	)
+}
+
+func finalModelCallAnswerFormatIndex(lower string) int {
+	markers := []string{
+		"final answer:",
+		"answer-format instruction",
+		"answer format instruction",
+	}
+	best := -1
+	for _, marker := range markers {
+		index := strings.Index(lower, marker)
+		if index < 0 {
+			continue
+		}
+		if best < 0 || index < best {
+			best = index
+		}
+	}
+	return best
+}
+
+func finalModelCallParagraphStart(content string, index int) int {
+	if index <= 0 {
+		return 0
+	}
+	start := strings.LastIndex(content[:index], "\n\n")
+	if start >= 0 {
+		return start + len("\n\n")
+	}
+	start = strings.LastIndex(content[:index], "\n")
+	if start >= 0 {
+		return start + len("\n")
+	}
+	return 0
+}
+
+func finalModelCallParagraphEnd(content string, index int) int {
+	if index >= len(content) {
+		return len(content)
+	}
+	end := strings.Index(content[index:], "\n\n")
+	if end >= 0 {
+		return index + end
+	}
+	end = strings.Index(content[index:], "\n")
+	if end >= 0 {
+		return index + end
+	}
+	return len(content)
+}
+
+func finalModelCallLimitSnippet(
+	snippet string,
+	index int,
+	limit int,
+) string {
+	runes := []rune(snippet)
+	if limit <= 0 || len(runes) <= limit {
+		return snippet
+	}
+	if index < 0 {
+		index = 0
+	}
+	if index > len(snippet) {
+		index = len(snippet)
+	}
+	marker := utf8.RuneCountInString(snippet[:index])
+	if marker > len(runes) {
+		marker = len(runes)
+	}
+	head := limit / 2
+	start := marker - head
+	if start < 0 {
+		start = 0
+	}
+	if start+limit > len(runes) {
+		start = len(runes) - limit
+	}
+	if start < 0 {
+		start = 0
+	}
+	return string(runes[start : start+limit])
 }
 
 func finalModelCallNormalizeTail(
