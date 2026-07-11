@@ -2347,6 +2347,20 @@ func TestToolCall_ActRoutesLegacyFields(t *testing.T) {
 			},
 		},
 		{
+			name: "top-level scroll alias",
+			input: map[string]any{
+				"action":    actionScroll,
+				"direction": "up",
+				"amount":    500,
+			},
+			wantTool: mcpToolMouseWheel,
+			assertArg: func(t *testing.T, call fakeCall) {
+				t.Helper()
+				require.Equal(t, 0, call.Args["deltaX"])
+				require.Equal(t, -500, call.Args["deltaY"])
+			},
+		},
+		{
 			name: "drag",
 			input: map[string]any{
 				"action":   actionAct,

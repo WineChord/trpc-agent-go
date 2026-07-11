@@ -57,6 +57,7 @@ const (
 	actionAct        = "act"
 	actionEvaluate   = "evaluate"
 	actionWait       = "wait"
+	actionScroll     = "scroll"
 )
 
 const (
@@ -140,6 +141,7 @@ var supportedActions = []string{
 	actionAct,
 	actionEvaluate,
 	actionWait,
+	actionScroll,
 }
 
 var supportedPlaywrightMCPActions = []string{
@@ -159,6 +161,7 @@ var supportedPlaywrightMCPActions = []string{
 	actionDialog,
 	actionAct,
 	actionEvaluate,
+	actionScroll,
 }
 
 func supportedActionsForDriver(driverType string) []string {
@@ -512,6 +515,10 @@ func (t *Tool) Call(ctx context.Context, args []byte) (any, error) {
 	}
 	if actionKey == actionWait {
 		in = normalizeWaitActionInput(in)
+		actionKey = strings.ToLower(actionAct)
+	}
+	if actionKey == actionScroll {
+		in.Kind = actScroll
 		actionKey = strings.ToLower(actionAct)
 	}
 	in = normalizeBrowserActionInput(in, actionKey)
