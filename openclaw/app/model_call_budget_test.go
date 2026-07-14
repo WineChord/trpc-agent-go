@@ -946,8 +946,9 @@ func TestModelCallBudgetIterModel_FinalizesNearDeadline(t *testing.T) {
 	_, err := iter.GenerateContentIter(ctx, req)
 	require.NoError(t, err)
 
-	got := underlying.lastIterRequest()
+	got := underlying.lastRequest()
 	require.NotNil(t, got)
+	require.Nil(t, underlying.lastIterRequest())
 	require.Nil(t, got.Tools)
 	require.Len(t, got.Messages, 2)
 	require.Contains(
@@ -1047,8 +1048,9 @@ func TestModelCallBudgetIterModel_FinalizesWhenPrefinalWindowExpires(
 
 	require.Len(t, got, 1)
 	require.Equal(t, "final answer", got[0].Choices[0].Message.Content)
-	requests := underlying.iterRequestsSnapshot()
+	requests := underlying.requestsSnapshot()
 	require.Len(t, requests, 2)
+	require.Empty(t, underlying.iterRequestsSnapshot())
 	require.NotNil(t, requests[0].Tools)
 	require.Nil(t, requests[1].Tools)
 	require.Len(t, requests[1].Messages, 2)
@@ -1058,6 +1060,538 @@ func TestModelCallBudgetIterModel_FinalizesWhenPrefinalWindowExpires(
 		"final allowed model call",
 	)
 	require.Nil(t, req.Tools)
+}
+
+func TestModelCallBudgetModel_FinalizesWhenPrefinalProviderStalls(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	underlying := newStalledPrefinalBudgetModel()
+	t.Cleanup(underlying.release)
+	wrapped := newModelCallBudgetModel(underlying)
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(800*time.Millisecond),
+	)
+	defer cancel()
+	ctx = withModelCallBudgetValue(
+		ctx,
+		newModelCallBudget(0, false, 600*time.Millisecond),
+	)
+	req := &model.Request{
+		Messages: []model.Message{model.NewUserMessage("question")},
+		Tools:    map[string]tool.Tool{"search": nil},
+	}
+
+	ch, err := wrapped.GenerateContent(ctx, req)
+	require.NoError(t, err)
+	select {
+	case resp := <-ch:
+		require.Equal(
+			t,
+			"final answer",
+			resp.Choices[0].Message.Content,
+		)
+	case <-time.After(600 * time.Millisecond):
+		t.Fatal("prefinal provider stall blocked finalization")
+	}
+	require.Equal(t, int64(2), underlying.callCount())
+}
+
+func TestModelCallBudgetIterModel_FinalizesWhenPrefinalProviderStalls(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	underlying := newStalledPrefinalBudgetModel()
+	t.Cleanup(underlying.release)
+	wrapped := newModelCallBudgetModel(underlying)
+	iter, ok := wrapped.(model.IterModel)
+	require.True(t, ok)
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(800*time.Millisecond),
+	)
+	defer cancel()
+	ctx = withModelCallBudgetValue(
+		ctx,
+		newModelCallBudget(0, false, 600*time.Millisecond),
+	)
+	req := &model.Request{
+		Messages: []model.Message{model.NewUserMessage("question")},
+		Tools:    map[string]tool.Tool{"search": nil},
+	}
+
+	seq, err := iter.GenerateContentIter(ctx, req)
+	require.NoError(t, err)
+	result := make(chan *model.Response, 1)
+	go seq(func(resp *model.Response) bool {
+		result <- resp
+		return true
+	})
+	select {
+	case resp := <-result:
+		require.Equal(
+			t,
+			"final answer",
+			resp.Choices[0].Message.Content,
+		)
+	case <-time.After(600 * time.Millisecond):
+		t.Fatal("prefinal iter provider stall blocked finalization")
+	}
+	require.Equal(t, int64(2), underlying.callCount())
+	require.Zero(t, underlying.iterCallCount())
+}
+
+func TestModelCallBudgetModel_SnapshotsRequestForStalledProvider(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	underlying := &retainingPrefinalBudgetModel{
+		observed: make(chan retainedBudgetRequest, 1),
+	}
+	wrapped := newModelCallBudgetModel(underlying)
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(800*time.Millisecond),
+	)
+	defer cancel()
+	ctx = withModelCallBudgetValue(
+		ctx,
+		newModelCallBudget(0, false, 600*time.Millisecond),
+	)
+	req := modelCallBudgetTestRequest()
+	req.Stream = true
+
+	ch, err := wrapped.GenerateContent(ctx, req)
+	require.NoError(t, err)
+	resp := <-ch
+	require.Equal(t, "final answer", resp.Choices[0].Message.Content)
+	select {
+	case got := <-underlying.observed:
+		require.True(t, got.hasTools)
+		require.Equal(t, 1, got.messages)
+		require.True(t, got.stream)
+	case <-time.After(600 * time.Millisecond):
+		t.Fatal("stalled provider did not inspect its request snapshot")
+	}
+}
+
+func TestModelCallBudgetModel_StopsAfterTerminalProviderResponse(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	underlying := &scriptedPrefinalBudgetModel{
+		initial: []*model.Response{modelCallBudgetTestFinalResponse()},
+	}
+	wrapped := newModelCallBudgetModel(underlying)
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(time.Second),
+	)
+	defer cancel()
+	ctx = withModelCallBudgetValue(
+		ctx,
+		newModelCallBudget(0, false, 500*time.Millisecond),
+	)
+
+	ch, err := wrapped.GenerateContent(ctx, modelCallBudgetTestRequest())
+	require.NoError(t, err)
+	result := make(chan []*model.Response, 1)
+	go func() {
+		var responses []*model.Response
+		for resp := range ch {
+			responses = append(responses, resp)
+		}
+		result <- responses
+	}()
+	var responses []*model.Response
+	select {
+	case responses = <-result:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("terminal response did not stop provider forwarding")
+	}
+
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Done)
+	require.Equal(t, int64(1), underlying.callCount())
+}
+
+func TestModelCallBudgetIterModel_StopsAfterTerminalProviderResponse(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	underlying := &scriptedPrefinalBudgetModel{
+		initial: []*model.Response{modelCallBudgetTestFinalResponse()},
+	}
+	wrapped := newModelCallBudgetModel(underlying)
+	iter, ok := wrapped.(model.IterModel)
+	require.True(t, ok)
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(time.Second),
+	)
+	defer cancel()
+	ctx = withModelCallBudgetValue(
+		ctx,
+		newModelCallBudget(0, false, 500*time.Millisecond),
+	)
+
+	seq, err := iter.GenerateContentIter(ctx, modelCallBudgetTestRequest())
+	require.NoError(t, err)
+	result := make(chan []*model.Response, 1)
+	go func() {
+		var responses []*model.Response
+		seq(func(resp *model.Response) bool {
+			responses = append(responses, resp)
+			return true
+		})
+		result <- responses
+	}()
+	var responses []*model.Response
+	select {
+	case responses = <-result:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("terminal response did not stop sequence forwarding")
+	}
+
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Done)
+	require.Equal(t, int64(1), underlying.callCount())
+	require.Zero(t, underlying.iterCallCount())
+}
+
+func TestModelCallBudgetIterModel_PropagatesYieldFalse(t *testing.T) {
+	t.Parallel()
+
+	underlying := &scriptedPrefinalBudgetModel{
+		initial: []*model.Response{
+			modelCallBudgetTestResponse("first", false),
+			modelCallBudgetTestResponse("second", false),
+		},
+	}
+	wrapped := newModelCallBudgetModel(underlying)
+	iter, ok := wrapped.(model.IterModel)
+	require.True(t, ok)
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(time.Second),
+	)
+	defer cancel()
+	ctx = withModelCallBudgetValue(
+		ctx,
+		newModelCallBudget(0, false, 500*time.Millisecond),
+	)
+
+	seq, err := iter.GenerateContentIter(ctx, modelCallBudgetTestRequest())
+	require.NoError(t, err)
+	var responses []*model.Response
+	seq(func(resp *model.Response) bool {
+		responses = append(responses, resp)
+		return false
+	})
+
+	require.Len(t, responses, 1)
+	require.Equal(t, "first", responses[0].Choices[0].Message.Content)
+	require.Equal(t, int64(1), underlying.callCount())
+	require.Zero(t, underlying.iterCallCount())
+}
+
+func TestModelCallBudgetForwardResponses_PreservesConsumerStopAtDeadline(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(time.Second),
+	)
+	defer cancel()
+	prefinalCtx, prefinalCancel := context.WithDeadline(
+		ctx,
+		time.Now().Add(20*time.Millisecond),
+	)
+	defer prefinalCancel()
+	responses := make(chan *model.Response, 1)
+	responses <- modelCallBudgetTestResponse("partial", false)
+
+	result := modelCallBudgetForwardResponses(
+		ctx,
+		prefinalCtx,
+		responses,
+		&modelCallBudget{deadlineWindow: time.Second},
+		func(*model.Response) modelCallBudgetForwardResult {
+			<-prefinalCtx.Done()
+			return modelCallBudgetForwardResult{stopped: true}
+		},
+	)
+
+	require.True(t, result.stopped)
+	require.False(t, result.timedOut)
+}
+
+func TestModelCallBudgetModel_FinalizesTerminalTimeoutOnOpenChannel(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	finalCanceled := make(chan struct{})
+	underlying := &scriptedPrefinalBudgetModel{
+		initial: []*model.Response{
+			timeoutResponse(time.Minute, context.DeadlineExceeded),
+		},
+		finalCanceled: finalCanceled,
+	}
+	wrapped := newModelCallBudgetModel(underlying)
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(2*time.Second),
+	)
+	defer cancel()
+	ctx = withModelCallBudgetValue(
+		ctx,
+		newModelCallBudget(0, false, time.Second),
+	)
+
+	ch, err := wrapped.GenerateContent(ctx, modelCallBudgetTestRequest())
+	require.NoError(t, err)
+	select {
+	case resp := <-ch:
+		require.Equal(
+			t,
+			"final answer",
+			resp.Choices[0].Message.Content,
+		)
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("terminal timeout waited for the prefinal deadline")
+	}
+	select {
+	case <-finalCanceled:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("terminal final response did not cancel the provider")
+	}
+	require.Equal(t, int64(2), underlying.callCount())
+	require.False(t, underlying.finalStartedBeforeCancel())
+}
+
+func TestModelCallBudgetIterModel_CancelsFinalProvider(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name  string
+		yield bool
+	}{
+		{name: "terminal delivered", yield: true},
+		{name: "consumer stopped", yield: false},
+	} {
+		testCase := tt
+		t.Run(testCase.name, func(t *testing.T) {
+			finalCanceled := make(chan struct{})
+			underlying := &scriptedPrefinalBudgetModel{
+				finalCanceled: finalCanceled,
+			}
+			wrapped := newModelCallBudgetModel(underlying)
+			iter, ok := wrapped.(model.IterModel)
+			require.True(t, ok)
+			ctx, cancel := context.WithDeadline(
+				context.Background(),
+				time.Now().Add(time.Second),
+			)
+			defer cancel()
+			ctx = withModelCallBudgetValue(
+				ctx,
+				newModelCallBudget(0, false, time.Minute),
+			)
+
+			seq, err := iter.GenerateContentIter(
+				ctx,
+				modelCallBudgetTestRequest(),
+			)
+			require.NoError(t, err)
+			seq(func(*model.Response) bool { return testCase.yield })
+			select {
+			case <-finalCanceled:
+			case <-time.After(300 * time.Millisecond):
+				t.Fatal("final provider context was not canceled")
+			}
+			require.Equal(t, int64(1), underlying.callCount())
+			require.Zero(t, underlying.iterCallCount())
+		})
+	}
+}
+
+func TestModelCallBudgetIterModel_CancelsFallbackProvider(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name  string
+		yield bool
+	}{
+		{name: "terminal delivered", yield: true},
+		{name: "consumer stopped", yield: false},
+	} {
+		testCase := tt
+		t.Run(testCase.name, func(t *testing.T) {
+			finalCanceled := make(chan struct{})
+			underlying := &scriptedPrefinalBudgetModel{
+				initial: []*model.Response{
+					timeoutResponse(
+						time.Minute,
+						context.DeadlineExceeded,
+					),
+				},
+				finalCanceled: finalCanceled,
+			}
+			wrapped := newModelCallBudgetModel(underlying)
+			iter, ok := wrapped.(model.IterModel)
+			require.True(t, ok)
+			ctx, cancel := context.WithDeadline(
+				context.Background(),
+				time.Now().Add(2*time.Second),
+			)
+			defer cancel()
+			ctx = withModelCallBudgetValue(
+				ctx,
+				newModelCallBudget(0, false, time.Second),
+			)
+
+			seq, err := iter.GenerateContentIter(
+				ctx,
+				modelCallBudgetTestRequest(),
+			)
+			require.NoError(t, err)
+			seq(func(resp *model.Response) bool {
+				require.Equal(
+					t,
+					"final answer",
+					resp.Choices[0].Message.Content,
+				)
+				return testCase.yield
+			})
+			select {
+			case <-finalCanceled:
+			case <-time.After(300 * time.Millisecond):
+				t.Fatal("fallback provider context was not canceled")
+			}
+			require.Equal(t, int64(2), underlying.callCount())
+			require.Zero(t, underlying.iterCallCount())
+			require.False(
+				t,
+				underlying.finalStartedBeforeCancel(),
+			)
+		})
+	}
+}
+
+func TestModelCallBudgetModel_FinalizesWhenOutputIsBackpressured(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	underlying := &scriptedPrefinalBudgetModel{
+		initial: []*model.Response{
+			modelCallBudgetTestResponse("first", false),
+			modelCallBudgetTestResponse("second", false),
+		},
+	}
+	wrapped := newModelCallBudgetModel(underlying)
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(1200*time.Millisecond),
+	)
+	defer cancel()
+	ctx = withModelCallBudgetValue(
+		ctx,
+		newModelCallBudget(0, false, 900*time.Millisecond),
+	)
+
+	ch, err := wrapped.GenerateContent(ctx, modelCallBudgetTestRequest())
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return underlying.callCount() == 2
+	}, 700*time.Millisecond, 10*time.Millisecond)
+
+	first := <-ch
+	require.Equal(t, "first", first.Choices[0].Message.Content)
+	final := <-ch
+	require.Equal(t, "final answer", final.Choices[0].Message.Content)
+	_, ok := <-ch
+	require.False(t, ok)
+}
+
+func TestModelCallBudgetModel_NilFinalChannelHonorsContext(t *testing.T) {
+	t.Parallel()
+
+	underlying := &scriptedPrefinalBudgetModel{nilFinal: true}
+	wrapped := newModelCallBudgetModel(underlying)
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(500*time.Millisecond),
+	)
+	defer cancel()
+	ctx = withModelCallBudgetValue(
+		ctx,
+		newModelCallBudget(0, false, 300*time.Millisecond),
+	)
+
+	ch, err := wrapped.GenerateContent(ctx, modelCallBudgetTestRequest())
+	require.NoError(t, err)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range ch {
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(800 * time.Millisecond):
+		t.Fatal("nil final response channel ignored request context")
+	}
+	require.Equal(t, int64(2), underlying.callCount())
+}
+
+func TestModelCallBudgetIterModel_NilFinalChannelHonorsContext(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	underlying := &scriptedPrefinalBudgetModel{nilFinal: true}
+	wrapped := newModelCallBudgetModel(underlying)
+	iter, ok := wrapped.(model.IterModel)
+	require.True(t, ok)
+	ctx, cancel := context.WithDeadline(
+		context.Background(),
+		time.Now().Add(500*time.Millisecond),
+	)
+	defer cancel()
+	ctx = withModelCallBudgetValue(
+		ctx,
+		newModelCallBudget(0, false, 300*time.Millisecond),
+	)
+
+	seq, err := iter.GenerateContentIter(
+		ctx,
+		modelCallBudgetTestRequest(),
+	)
+	require.NoError(t, err)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		seq(func(*model.Response) bool { return true })
+	}()
+	select {
+	case <-done:
+	case <-time.After(800 * time.Millisecond):
+		t.Fatal("nil final response sequence ignored request context")
+	}
+	require.Equal(t, int64(2), underlying.callCount())
+	require.Zero(t, underlying.iterCallCount())
 }
 
 func TestModelCallBudgetModel_FinalizesAfterInnerModelTimeout(
@@ -1130,8 +1664,9 @@ func TestModelCallBudgetIterModel_FinalizesAfterInnerModelTimeout(
 
 	require.Len(t, got, 1)
 	require.Equal(t, "final answer", got[0].Choices[0].Message.Content)
-	requests := underlying.iterRequestsSnapshot()
+	requests := underlying.requestsSnapshot()
 	require.Len(t, requests, 2)
+	require.Empty(t, underlying.iterRequestsSnapshot())
 	require.NotNil(t, requests[0].Tools)
 	require.Nil(t, requests[1].Tools)
 	require.Nil(t, req.Tools)
@@ -1220,6 +1755,27 @@ func TestModelCallBudgetIterModel_FinalizesOnLastAllowedCall(t *testing.T) {
 	require.Equal(t, map[string]any{
 		"response_format": "json",
 	}, got.ExtraFields)
+}
+
+func TestModelCallBudgetIterModel_CountFinalizationUsesNativeIter(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	underlying := &capturingBudgetModel{}
+	wrapped := newModelCallBudgetModel(underlying)
+	iter, ok := wrapped.(model.IterModel)
+	require.True(t, ok)
+	ctx := withModelCallBudgetValue(
+		context.Background(),
+		newModelCallBudget(1, true, time.Minute),
+	)
+
+	_, err := iter.GenerateContentIter(ctx, modelCallBudgetTestRequest())
+	require.NoError(t, err)
+
+	require.NotNil(t, underlying.lastIterRequest())
+	require.Nil(t, underlying.lastRequest())
 }
 
 func TestApplyFinalModelCallRequestNil(t *testing.T) {
@@ -1405,6 +1961,172 @@ type prefinalTimeoutBudgetModel struct {
 	iterRequests []*model.Request
 }
 
+type stalledPrefinalBudgetModel struct {
+	calls     atomic.Int64
+	iterCalls atomic.Int64
+	blocked   chan struct{}
+	once      sync.Once
+}
+
+type retainedBudgetRequest struct {
+	hasTools bool
+	messages int
+	stream   bool
+}
+
+type retainingPrefinalBudgetModel struct {
+	observed chan retainedBudgetRequest
+}
+
+func (m *retainingPrefinalBudgetModel) GenerateContent(
+	ctx context.Context,
+	req *model.Request,
+) (<-chan *model.Response, error) {
+	if req == nil || req.Tools == nil {
+		ch := make(chan *model.Response, 1)
+		ch <- modelCallBudgetTestFinalResponse()
+		close(ch)
+		return ch, nil
+	}
+	go func() {
+		<-ctx.Done()
+		m.observed <- retainedBudgetRequest{
+			hasTools: req.Tools != nil,
+			messages: len(req.Messages),
+			stream:   req.Stream,
+		}
+	}()
+	return make(chan *model.Response), nil
+}
+
+func (m *retainingPrefinalBudgetModel) Info() model.Info {
+	return model.Info{Name: "retaining-prefinal"}
+}
+
+type scriptedPrefinalBudgetModel struct {
+	calls                     atomic.Int64
+	iterCalls                 atomic.Int64
+	initial                   []*model.Response
+	closeFirst                bool
+	nilFinal                  bool
+	finalCanceled             chan struct{}
+	cancelOnce                sync.Once
+	ctxMu                     sync.Mutex
+	initialCtx                context.Context
+	finalBeforePrefinalCancel atomic.Bool
+}
+
+func (m *scriptedPrefinalBudgetModel) GenerateContent(
+	ctx context.Context,
+	req *model.Request,
+) (<-chan *model.Response, error) {
+	m.calls.Add(1)
+	if req == nil || req.Tools == nil {
+		m.ctxMu.Lock()
+		initialCtx := m.initialCtx
+		m.ctxMu.Unlock()
+		if initialCtx != nil && initialCtx.Err() == nil {
+			m.finalBeforePrefinalCancel.Store(true)
+		}
+		if m.finalCanceled != nil {
+			go func() {
+				<-ctx.Done()
+				m.cancelOnce.Do(func() { close(m.finalCanceled) })
+			}()
+		}
+		if m.nilFinal {
+			return nil, nil
+		}
+		ch := make(chan *model.Response, 1)
+		ch <- modelCallBudgetTestFinalResponse()
+		close(ch)
+		return ch, nil
+	}
+	m.ctxMu.Lock()
+	m.initialCtx = ctx
+	m.ctxMu.Unlock()
+	ch := make(chan *model.Response, len(m.initial))
+	for _, resp := range m.initial {
+		ch <- resp
+	}
+	if m.closeFirst {
+		close(ch)
+	}
+	return ch, nil
+}
+
+func (m *scriptedPrefinalBudgetModel) Info() model.Info {
+	return model.Info{Name: "scripted-prefinal"}
+}
+
+func (m *scriptedPrefinalBudgetModel) GenerateContentIter(
+	_ context.Context,
+	_ *model.Request,
+) (model.Seq[*model.Response], error) {
+	m.iterCalls.Add(1)
+	return func(func(*model.Response) bool) {}, nil
+}
+
+func (m *scriptedPrefinalBudgetModel) callCount() int64 {
+	return m.calls.Load()
+}
+
+func (m *scriptedPrefinalBudgetModel) iterCallCount() int64 {
+	return m.iterCalls.Load()
+}
+
+func (m *scriptedPrefinalBudgetModel) finalStartedBeforeCancel() bool {
+	return m.finalBeforePrefinalCancel.Load()
+}
+
+func newStalledPrefinalBudgetModel() *stalledPrefinalBudgetModel {
+	return &stalledPrefinalBudgetModel{blocked: make(chan struct{})}
+}
+
+func (m *stalledPrefinalBudgetModel) GenerateContent(
+	_ context.Context,
+	req *model.Request,
+) (<-chan *model.Response, error) {
+	m.calls.Add(1)
+	if req == nil || req.Tools == nil {
+		ch := make(chan *model.Response, 1)
+		ch <- modelCallBudgetTestFinalResponse()
+		close(ch)
+		return ch, nil
+	}
+	return make(chan *model.Response), nil
+}
+
+func (m *stalledPrefinalBudgetModel) Info() model.Info {
+	return model.Info{Name: "stalled-prefinal"}
+}
+
+func (m *stalledPrefinalBudgetModel) GenerateContentIter(
+	_ context.Context,
+	req *model.Request,
+) (model.Seq[*model.Response], error) {
+	m.iterCalls.Add(1)
+	return func(yield func(*model.Response) bool) {
+		if req == nil || req.Tools == nil {
+			yield(modelCallBudgetTestFinalResponse())
+			return
+		}
+		<-m.blocked
+	}, nil
+}
+
+func (m *stalledPrefinalBudgetModel) release() {
+	m.once.Do(func() { close(m.blocked) })
+}
+
+func (m *stalledPrefinalBudgetModel) callCount() int64 {
+	return m.calls.Load()
+}
+
+func (m *stalledPrefinalBudgetModel) iterCallCount() int64 {
+	return m.iterCalls.Load()
+}
+
 func (m *prefinalTimeoutBudgetModel) GenerateContent(
 	ctx context.Context,
 	req *model.Request,
@@ -1526,11 +2248,25 @@ func (m *innerTimeoutBudgetModel) iterRequestsSnapshot() []*model.Request {
 }
 
 func modelCallBudgetTestFinalResponse() *model.Response {
+	return modelCallBudgetTestResponse("final answer", true)
+}
+
+func modelCallBudgetTestResponse(
+	content string,
+	done bool,
+) *model.Response {
 	return &model.Response{
-		Done: true,
+		Done: done,
 		Choices: []model.Choice{{
-			Message: model.NewAssistantMessage("final answer"),
+			Message: model.NewAssistantMessage(content),
 		}},
+	}
+}
+
+func modelCallBudgetTestRequest() *model.Request {
+	return &model.Request{
+		Messages: []model.Message{model.NewUserMessage("question")},
+		Tools:    map[string]tool.Tool{"search": nil},
 	}
 }
 
