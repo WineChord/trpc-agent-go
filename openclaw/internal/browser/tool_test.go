@@ -897,6 +897,35 @@ func TestToolCall_FillUsesFillForm(t *testing.T) {
 	require.NotContains(t, fields[0], "text")
 }
 
+func TestToolCall_ActFillAcceptsSingleTargetText(t *testing.T) {
+	t.Parallel()
+
+	drv := &fakeDriver{}
+	tool := newTestTool(drv)
+
+	_, err := tool.Call(
+		context.Background(),
+		mustJSON(t, map[string]any{
+			"action": actionAct,
+			"request": map[string]any{
+				"kind":   actFill,
+				"ref":    "e61",
+				"target": "Search combobox",
+				"text":   "book",
+			},
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, drv.calls, 1)
+	require.Equal(t, mcpToolFillForm, drv.calls[0].Tool)
+	fields, ok := drv.calls[0].Args["fields"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, fields, 1)
+	require.Equal(t, "Search combobox", fields[0]["target"])
+	require.Equal(t, "book", fields[0]["value"])
+	require.Contains(t, fields[0]["element"], "e61")
+}
+
 func TestToolCall_WaitConvertsMilliseconds(t *testing.T) {
 	t.Parallel()
 
@@ -2318,6 +2347,20 @@ func TestToolCall_ActRoutesLegacyFields(t *testing.T) {
 			},
 		},
 		{
+			name: "top-level scroll alias",
+			input: map[string]any{
+				"action":    actionScroll,
+				"direction": "up",
+				"amount":    500,
+			},
+			wantTool: mcpToolMouseWheel,
+			assertArg: func(t *testing.T, call fakeCall) {
+				t.Helper()
+				require.Equal(t, 0, call.Args["deltaX"])
+				require.Equal(t, -500, call.Args["deltaY"])
+			},
+		},
+		{
 			name: "drag",
 			input: map[string]any{
 				"action":   actionAct,
@@ -2451,6 +2494,70 @@ func TestToolCall_ActClickAcceptsTopLevelElementTarget(t *testing.T) {
 	require.Equal(t, "element article", drv.calls[0].Args["element"])
 }
 
+func TestToolCall_ActClickPassesBrowserServerElementTarget(t *testing.T) {
+	t.Parallel()
+
+	drv := &fakeDriver{}
+	tool := newBrowserServerTestTool(drv)
+
+	_, err := tool.Call(
+		context.Background(),
+		mustJSON(t, map[string]any{
+			"action": actionAct,
+			"request": map[string]any{
+				"kind":   actClick,
+				"target": "button that says Download",
+			},
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, drv.calls, 1)
+	require.Equal(t, mcpToolClick, drv.calls[0].Tool)
+	require.Equal(
+		t,
+		"button that says Download",
+		drv.calls[0].Args["element"],
+	)
+	require.NotContains(t, drv.calls[0].Args, "ref")
+}
+
+func TestToolCall_ActDragPassesBrowserServerElementTargets(t *testing.T) {
+	t.Parallel()
+
+	drv := &fakeDriver{}
+	tool := newBrowserServerTestTool(drv)
+
+	_, err := tool.Call(
+		context.Background(),
+		mustJSON(t, map[string]any{
+			"action":      actionAct,
+			"kind":        actDrag,
+			"startTarget": ".card",
+			"endTarget":   ".drop-zone",
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, drv.calls, 1)
+	require.Equal(t, mcpToolDrag, drv.calls[0].Tool)
+	require.Equal(t, ".card", drv.calls[0].Args["startElement"])
+	require.Equal(t, ".drop-zone", drv.calls[0].Args["endElement"])
+	require.NotContains(t, drv.calls[0].Args, "startRef")
+	require.NotContains(t, drv.calls[0].Args, "endRef")
+}
+
+func TestToolCall_ActClickRejectsEmptyBrowserServerTarget(t *testing.T) {
+	t.Parallel()
+
+	_, err := newBrowserServerTestTool(&fakeDriver{}).Call(
+		context.Background(),
+		mustJSON(t, map[string]any{
+			"action": actionAct,
+			"kind":   actClick,
+		}),
+	)
+	require.ErrorContains(t, err, "browser act requires ref or target")
+}
+
 func TestToolCall_ProfileAliasUsesDefaultProfile(t *testing.T) {
 	t.Parallel()
 
@@ -2506,6 +2613,63 @@ func TestNormalizeActRequestBackfillsNestedDragRefs(t *testing.T) {
 
 	require.Equal(t, "source-ref", got.StartRef)
 	require.Equal(t, "destination-ref", got.EndRef)
+}
+
+func TestToolCall_ActBackfillsTopLevelKindIntoNestedRequest(t *testing.T) {
+	t.Parallel()
+
+	drv := &fakeDriver{
+		callResult: map[string]any{
+			mcpToolPressKey: textPayload("pressed"),
+		},
+	}
+
+	raw, err := newTestTool(drv).Call(
+		context.Background(),
+		mustJSON(t, map[string]any{
+			"action": actionAct,
+			"kind":   actPress,
+			"request": map[string]any{
+				"key": "Home",
+			},
+		}),
+	)
+	require.NoError(t, err)
+
+	got := raw.(Result)
+	require.Equal(t, actionAct, got.Action)
+	require.Len(t, drv.calls, 1)
+	require.Equal(t, mcpToolPressKey, drv.calls[0].Tool)
+	require.Equal(t, "Home", drv.calls[0].Args["key"])
+}
+
+func TestNormalizeActRequestPreservesExplicitNestedValues(t *testing.T) {
+	t.Parallel()
+
+	got := normalizeActRequest(input{
+		Kind:      actType,
+		Text:      "fallback",
+		Modifiers: []string{"Shift"},
+		Values:    []string{"fallback"},
+		Fields: []map[string]any{
+			{"target": "fallback", "text": "fallback"},
+		},
+		Request: &actRequest{
+			Kind:      actType,
+			Text:      " ",
+			Modifiers: []string{},
+			Values:    []string{},
+			Fields:    []map[string]any{},
+		},
+	})
+
+	require.Equal(t, " ", got.Text)
+	require.Empty(t, got.Modifiers)
+	require.NotNil(t, got.Modifiers)
+	require.Empty(t, got.Values)
+	require.NotNil(t, got.Values)
+	require.Empty(t, got.Fields)
+	require.NotNil(t, got.Fields)
 }
 
 func TestToolCall_ActPassesTimeoutToBrowserServer(t *testing.T) {
@@ -4310,10 +4474,16 @@ func TestToolCall_ActScrollPassesBrowserServerRef(t *testing.T) {
 	require.Equal(t, "e1", drv.calls[0].Args["ref"])
 }
 
-func TestToolCall_ActScrollIntoViewRejectsMCPDriver(t *testing.T) {
+func TestToolCall_ActScrollIntoViewFallsBackWithMCPDriver(t *testing.T) {
 	t.Parallel()
 
-	_, err := newTestTool(&fakeDriver{}).Call(
+	drv := &fakeDriver{
+		callResult: map[string]any{
+			mcpToolMouseWheel: textPayload("scrolled"),
+		},
+	}
+
+	raw, err := newTestTool(drv).Call(
 		context.Background(),
 		mustJSON(t, map[string]any{
 			"action": actionAct,
@@ -4323,8 +4493,14 @@ func TestToolCall_ActScrollIntoViewRejectsMCPDriver(t *testing.T) {
 			},
 		}),
 	)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "browser-server")
+	require.NoError(t, err)
+
+	got := raw.(Result)
+	require.Equal(t, actionAct, got.Action)
+	require.Len(t, drv.calls, 1)
+	require.Equal(t, mcpToolMouseWheel, drv.calls[0].Tool)
+	require.Equal(t, 0, drv.calls[0].Args["deltaX"])
+	require.Equal(t, defaultScrollDeltaY, drv.calls[0].Args["deltaY"])
 }
 
 func TestToolCall_ActScrollUsesDefaultWheelDelta(t *testing.T) {
@@ -4417,6 +4593,43 @@ func TestToolCall_ActScrollFallsBackToPressKey(t *testing.T) {
 	require.Equal(t, mcpToolMouseWheel, drv.calls[0].Tool)
 	require.Equal(t, mcpToolPressKey, drv.calls[1].Tool)
 	require.Equal(t, "PageUp", drv.calls[1].Args["key"])
+}
+
+func TestToolCall_ActScrollIntoViewUsesEvaluateWithMCP(t *testing.T) {
+	t.Parallel()
+
+	drv := &fakeDriver{}
+	tool := newToolWithDrivers(
+		defaultProfileName,
+		true,
+		navigationPolicy{},
+		nil,
+		nil,
+		nil,
+		map[string]ProfileConfig{
+			defaultProfileName: {Name: defaultProfileName},
+		},
+		map[string]driver{
+			defaultProfileName: drv,
+		},
+	)
+
+	_, err := tool.Call(
+		context.Background(),
+		mustJSON(t, map[string]any{
+			"action": actionAct,
+			"request": map[string]any{
+				"kind":   actScrollIntoView,
+				"ref":    "e81",
+				"target": "Search result",
+			},
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, drv.calls, 1)
+	require.Equal(t, mcpToolEvaluate, drv.calls[0].Tool)
+	require.Equal(t, scrollIntoViewFunction, drv.calls[0].Args["function"])
+	require.Equal(t, "Search result", drv.calls[0].Args["target"])
 }
 
 func TestToolCall_ActPressPassesDelayMS(t *testing.T) {
