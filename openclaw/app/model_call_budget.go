@@ -1053,6 +1053,7 @@ func finalModelCallTailEvidenceWithPrefix(
 	maxTokens int,
 ) []model.Message {
 	best := prefix
+	bestStart := len(transcript)
 	if !finalModelCallFits(ctx, counter, best, maxTokens) {
 		return best
 	}
@@ -1066,13 +1067,26 @@ func finalModelCallTailEvidenceWithPrefix(
 		candidate = append(candidate, suffix...)
 		if finalModelCallFits(ctx, counter, candidate, maxTokens) {
 			best = candidate
+			bestStart = start
 			continue
 		}
 		if len(best) > len(prefix) {
 			break
 		}
 	}
-	return best
+	if bestStart >= len(transcript) {
+		return best
+	}
+	return finalModelCallFillEarlierEvidence(
+		ctx,
+		counter,
+		transcript,
+		prefix,
+		best[len(prefix):],
+		anchor,
+		bestStart,
+		maxTokens,
+	)
 }
 
 func finalModelCallCompactTailEvidenceWithPrefix(
@@ -1098,11 +1112,93 @@ func finalModelCallCompactTailEvidenceWithPrefix(
 			candidate = append(candidate, prefix...)
 			candidate = append(candidate, compactSuffix...)
 			if finalModelCallFits(ctx, counter, candidate, maxTokens) {
-				return candidate
+				return finalModelCallFillEarlierEvidence(
+					ctx,
+					counter,
+					transcript,
+					prefix,
+					compactSuffix,
+					anchor,
+					start,
+					maxTokens,
+				)
 			}
 		}
 	}
 	return nil
+}
+
+func finalModelCallFillEarlierEvidence(
+	ctx context.Context,
+	counter model.TokenCounter,
+	transcript []model.Message,
+	prefix []model.Message,
+	suffix []model.Message,
+	anchor int,
+	suffixStart int,
+	maxTokens int,
+) []model.Message {
+	base := finalModelCallEvidenceCandidate(prefix, nil, suffix)
+	baseTokens, err := counter.CountTokensRange(
+		ctx,
+		base,
+		0,
+		len(base),
+	)
+	if err != nil || baseTokens > maxTokens {
+		return base
+	}
+	capacity := suffixStart - anchor - 1
+	if capacity <= 0 {
+		return base
+	}
+	earlier := make([]model.Message, 0, capacity)
+	remaining := maxTokens - baseTokens
+	for i := anchor + 1; i < suffixStart; i++ {
+		msg := transcript[i]
+		if !finalModelCallMessageHasContent(msg) {
+			continue
+		}
+		tokens, countErr := counter.CountTokens(ctx, msg)
+		if countErr != nil || tokens <= 0 || tokens > remaining {
+			continue
+		}
+		earlier = append(earlier, msg)
+		remaining -= tokens
+	}
+	candidate := finalModelCallEvidenceCandidate(prefix, earlier, suffix)
+	if !finalModelCallFits(ctx, counter, candidate, maxTokens) {
+		return base
+	}
+	return candidate
+}
+
+func finalModelCallEvidenceCandidate(
+	prefix []model.Message,
+	earlier []model.Message,
+	suffix []model.Message,
+) []model.Message {
+	candidate := make(
+		[]model.Message,
+		0,
+		len(prefix)+len(earlier)+len(suffix),
+	)
+	candidate = append(candidate, prefix...)
+	candidate = append(candidate, earlier...)
+	return append(candidate, suffix...)
+}
+
+func finalModelCallMessageHasContent(msg model.Message) bool {
+	if strings.TrimSpace(msg.Content) != "" ||
+		strings.TrimSpace(msg.ReasoningContent) != "" {
+		return true
+	}
+	for _, part := range msg.ContentParts {
+		if part.Text != nil && strings.TrimSpace(*part.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func finalModelCallCompactMessages(

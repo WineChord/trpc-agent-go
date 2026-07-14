@@ -724,6 +724,152 @@ func TestFinalModelCallRequest_TrimsSingleUserToolChain(t *testing.T) {
 	}
 }
 
+func TestFinalModelCallRequest_FillsBudgetWithEarlierEvidence(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	req := &model.Request{Messages: []model.Message{
+		model.NewSystemMessage("system instructions"),
+		model.NewUserMessage("identify the verified record"),
+		model.NewToolMessage(
+			"call_early",
+			"search",
+			"verified record from the primary source",
+		),
+		model.NewToolMessage(
+			"call_large",
+			"search",
+			"intermediate dump "+strings.Repeat("x", 1600),
+		),
+		model.NewToolMessage(
+			"call_recent",
+			"search",
+			"recent cross-check from a second source",
+		),
+	}}
+	config := modelCallBudgetFinalRequestConfig{
+		MaxInputTokens:      1200,
+		ApproxRunesPerToken: 1,
+	}
+
+	got := finalModelCallRequest(req, config)
+
+	content := budgetTestMessageText(got.Messages)
+	require.Contains(t, content, "identify the verified record")
+	require.Contains(t, content, "verified record from the primary source")
+	require.Contains(t, content, "recent cross-check from a second source")
+	require.NotContains(t, content, "intermediate dump")
+	counter := finalModelCallTokenCounter(config)
+	tokens, err := counter.CountTokensRange(
+		context.Background(),
+		got.Messages,
+		0,
+		len(got.Messages),
+	)
+	require.NoError(t, err)
+	require.LessOrEqual(t, tokens, config.MaxInputTokens)
+}
+
+func TestFinalModelCallFillEarlierEvidence_ContentAndOrder(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	text := "text-part evidence"
+	transcript := []model.Message{
+		model.NewSystemMessage("system"),
+		model.NewUserMessage("question"),
+		{
+			Role:             model.RoleAssistant,
+			ReasoningContent: "reasoning evidence",
+		},
+		{
+			Role: model.RoleAssistant,
+			ContentParts: []model.ContentPart{{
+				Type:  model.ContentTypeImage,
+				Image: &model.Image{},
+			}},
+		},
+		{
+			Role: model.RoleAssistant,
+			ContentParts: []model.ContentPart{{
+				Type: model.ContentTypeText,
+			}},
+		},
+		{
+			Role: model.RoleAssistant,
+			ContentParts: []model.ContentPart{{
+				Type: model.ContentTypeText,
+				Text: &text,
+			}},
+		},
+		model.NewUserMessage("latest evidence"),
+	}
+	original := append([]model.Message(nil), transcript...)
+	counter := model.NewSimpleTokenCounter(
+		model.WithApproxRunesPerToken(1),
+	)
+
+	got := finalModelCallFillEarlierEvidence(
+		context.Background(),
+		counter,
+		transcript,
+		transcript[:2],
+		transcript[6:],
+		1,
+		6,
+		100,
+	)
+
+	require.Equal(t, []model.Message{
+		transcript[0],
+		transcript[1],
+		transcript[2],
+		transcript[5],
+		transcript[6],
+	}, got)
+	require.Equal(t, original, transcript)
+}
+
+func TestFinalModelCallCompactTailEvidence_FillsEarlier(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	transcript := []model.Message{
+		model.NewUserMessage("question"),
+		model.NewAssistantMessage("earlier evidence"),
+		model.NewAssistantMessage(strings.Repeat("latest ", 100)),
+	}
+	original := append([]model.Message(nil), transcript...)
+	counter := model.NewSimpleTokenCounter(
+		model.WithApproxRunesPerToken(1),
+	)
+
+	got := finalModelCallCompactTailEvidenceWithPrefix(
+		context.Background(),
+		counter,
+		transcript,
+		transcript[:1],
+		0,
+		80,
+	)
+
+	content := budgetTestMessageText(got)
+	require.Contains(t, content, "earlier evidence")
+	require.Contains(t, content, "latest")
+	tokens, err := counter.CountTokensRange(
+		context.Background(),
+		got,
+		0,
+		len(got),
+	)
+	require.NoError(t, err)
+	require.LessOrEqual(t, tokens, 80)
+	require.Equal(t, original, transcript)
+}
+
 func TestFinalModelCallRequest_PreservesAnswerFormatInstruction(
 	t *testing.T,
 ) {
@@ -867,6 +1013,16 @@ func TestFinalModelCallHelpers_EdgeCases(t *testing.T) {
 			model.NewUserMessage("tail"),
 		}),
 	)
+	text := "text evidence"
+	require.True(t, finalModelCallMessageHasContent(model.Message{
+		ContentParts: []model.ContentPart{{Text: &text}},
+	}))
+	require.False(t, finalModelCallMessageHasContent(model.Message{
+		ContentParts: []model.ContentPart{{
+			Type:  model.ContentTypeImage,
+			Image: &model.Image{},
+		}},
+	}))
 	require.NotNil(t, applyFinalModelCallRequest(nil))
 }
 
