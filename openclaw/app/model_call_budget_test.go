@@ -649,12 +649,12 @@ func TestFinalModelCallRequest_UsesConfiguredTokenEstimate(t *testing.T) {
 
 	relaxed := finalModelCallRequest(
 		req,
-		modelCallBudgetFinalRequestConfig{MaxInputTokens: 600},
+		modelCallBudgetFinalRequestConfig{MaxInputTokens: 900},
 	)
 	strict := finalModelCallRequest(
 		req,
 		modelCallBudgetFinalRequestConfig{
-			MaxInputTokens:      600,
+			MaxInputTokens:      900,
 			ApproxRunesPerToken: 1,
 		},
 	)
@@ -708,7 +708,7 @@ func TestFinalModelCallRequest_TrimsSingleUserToolChain(t *testing.T) {
 	got := finalModelCallRequest(
 		req,
 		modelCallBudgetFinalRequestConfig{
-			MaxInputTokens:      700,
+			MaxInputTokens:      1300,
 			ApproxRunesPerToken: 1,
 		},
 	)
