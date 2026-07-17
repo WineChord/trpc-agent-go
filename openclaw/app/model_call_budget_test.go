@@ -1446,7 +1446,7 @@ func TestModelCallBudgetIterModel_FinalizesOnLastAllowedCall(t *testing.T) {
 	require.True(t, ok)
 	ctx := withModelCallBudgetValue(
 		context.Background(),
-		newModelCallBudget(1, true),
+		newModelCallBudget(1, true, 0),
 	)
 	req := &model.Request{
 		Messages: []model.Message{model.NewUserMessage("question")},
@@ -1494,7 +1494,7 @@ func TestModelCallBudgetIterModel_FinalizesOnLastAllowedCall(t *testing.T) {
 func TestApplyFinalModelCallRequestNil(t *testing.T) {
 	t.Parallel()
 
-	got := applyFinalModelCallRequest(nil)
+	got := applyFinalModelCallRequest(nil, false)
 
 	require.NotNil(t, got)
 	require.Nil(t, got.Tools)
